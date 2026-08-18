@@ -36,7 +36,26 @@ jobs:
       - name: Compilar Executável Standalone com PyInstaller
         run: |
           $launcherPath = if (Test-Path "client\launcher.py") { "client\launcher.py" } else { "launcher.py" }
-          pyinstaller --noconfirm --clean --onefile --name "CbrAgents-Client-Windows" $launcherPath
+          pyinstaller --noconfirm --clean --onefile `
+            --name "CbrAgents-Client-Windows" `
+            --collect-all playwright `
+            --collect-all camoufox `
+            --collect-all browserforge `
+            --collect-all apify_fingerprint_datapoints `
+            --collect-all language_tags `
+            --collect-all websockets `
+            --hidden-import="asyncio" `
+            --hidden-import="websockets" `
+            --hidden-import="playwright" `
+            --hidden-import="camoufox" `
+            --hidden-import="browserforge" `
+            --hidden-import="apify_fingerprint_datapoints" `
+            --hidden-import="language_tags" `
+            --hidden-import="multiprocessing" `
+            --hidden-import="multiprocessing.resource_tracker" `
+            --hidden-import="runpy" `
+            --hidden-import="tkinter" `
+            $launcherPath
 
       - name: Fazer Upload do Binário Windows
         uses: actions/upload-artifact@v4
@@ -68,7 +87,26 @@ jobs:
           if [ ! -f "$LAUNCHER_PATH" ]; then
             LAUNCHER_PATH="launcher.py"
           fi
-          pyinstaller --noconfirm --clean --onefile --name "CbrAgents-Client-Linux" "$LAUNCHER_PATH"
+          pyinstaller --noconfirm --clean --onefile \
+            --name "CbrAgents-Client-Linux" \
+            --collect-all playwright \
+            --collect-all camoufox \
+            --collect-all browserforge \
+            --collect-all apify_fingerprint_datapoints \
+            --collect-all language_tags \
+            --collect-all websockets \
+            --hidden-import="asyncio" \
+            --hidden-import="websockets" \
+            --hidden-import="playwright" \
+            --hidden-import="camoufox" \
+            --hidden-import="browserforge" \
+            --hidden-import="apify_fingerprint_datapoints" \
+            --hidden-import="language_tags" \
+            --hidden-import="multiprocessing" \
+            --hidden-import="multiprocessing.resource_tracker" \
+            --hidden-import="runpy" \
+            --hidden-import="tkinter" \
+            "$LAUNCHER_PATH"
           chmod +x dist/CbrAgents-Client-Linux
 
       - name: Fazer Upload do Binário Linux

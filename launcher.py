@@ -9,6 +9,8 @@
 """
 
 import os
+os.environ["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"] = "ubuntu24.04-x64"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 import sys
 import json
 import time
@@ -20,7 +22,19 @@ import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
+import runpy
+import base64
+import traceback
 from pathlib import Path
+
+# Dependências embutidas para o runtime do robô (PyInstaller Bundle)
+import asyncio
+import websockets
+try:
+    import playwright
+    import camoufox
+except ImportError:
+    pass
 
 # Constantes de Configuração
 DEFAULT_SERVER_URL = "https://ia.creditobr.com.br"
@@ -429,15 +443,46 @@ def run_gui():
 #  ENTRYPOINT
 # =============================================================================
 
-def main():
-    # Se chamado como subprocesso para executar o script do robô (PyInstaller bundle)
-    if len(sys.argv) > 1 and sys.argv[1] == "--run-client":
-        client_script = sys.argv[2]
-        remaining_args = sys.argv[3:]
+def handle_python_internal_args():
+    """Suporte universal para chamadas de subprocessos internos (Playwright, Camoufox, multiprocessing)."""
+    argv = sys.argv[1:]
+    if not argv:
+        return
+
+    # 1. Se chamado como subprocesso para rodar o cliente
+    if argv[0] == "--run-client" and len(argv) > 1:
+        client_script = argv[1]
+        remaining_args = argv[2:]
         sys.argv = [client_script] + remaining_args
         import runpy
         runpy.run_path(client_script, run_name="__main__")
         sys.exit(0)
+
+    # 2. Se chamado com flags do Python (-c, -m, -B, -S, -I, etc.)
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "-c" and i + 1 < len(argv):
+            code = argv[i + 1]
+            sys.argv = ["-c"] + argv[i + 2:]
+            exec(code, {"__name__": "__main__"})
+            sys.exit(0)
+        elif arg == "-m" and i + 1 < len(argv):
+            mod = argv[i + 1]
+            sys.argv = [mod] + argv[i + 2:]
+            import runpy
+            runpy.run_module(mod, run_name="__main__", alter_sys=True)
+            sys.exit(0)
+        elif arg.startswith("-") and arg not in ["--cli", "-h", "--help"]:
+            # Ignora flags python normais e avança
+            i += 1
+            continue
+        else:
+            break
+
+
+def main():
+    handle_python_internal_args()
 
     parser = argparse.ArgumentParser(description="CBR Agents Desktop Launcher")
     parser.add_argument("--cli", action="store_true", help="Executar no modo terminal/CLI")

@@ -1,5 +1,6 @@
 import os
 os.environ["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"] = "ubuntu24.04-x64"
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 import asyncio
 import json
 import argparse
