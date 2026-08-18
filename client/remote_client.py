@@ -133,14 +133,27 @@ def ensure_playwright_browsers():
     try:
         import subprocess
         print("🔍 Verificando navegadores e dependências (Chromium e Camoufox)...")
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+        # 1. Tenta instalar Chromium via driver embutido do Playwright
+        try:
+            from playwright._impl._driver import compute_driver_executable
+            driver_executable, driver_env = compute_driver_executable()
+            subprocess.run([str(driver_executable), "install", "chromium"], env=driver_env, check=False)
+        except Exception:
+            try:
+                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+            except Exception:
+                pass
+
+        # 2. Tenta verificar Camoufox
         try:
             print("🦊 Verificando binários antidetect do Camoufox...")
-            subprocess.run([sys.executable, "-m", "camoufox", "fetch"], check=False)
+            try:
+                from camoufox.pkg import download_official_browser
+                download_official_browser()
+            except Exception:
+                subprocess.run([sys.executable, "-m", "camoufox", "fetch"], check=False)
         except Exception as camou_fetch_err:
-            print(f"⚠️ Aviso ao buscar binário Camoufox: {camou_fetch_err}")
-        # Skip install-deps to prevent hanging on password prompt in background/non-interactive tasks
-        pass
+            pass
     except Exception as e:
         print(f"⚠️ Aviso ao verificar navegadores: {e}")
 

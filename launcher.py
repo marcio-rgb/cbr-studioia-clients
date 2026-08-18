@@ -369,12 +369,18 @@ def run_gui():
             root.after(0, lambda: set_ui_state(False))
             return
 
-        # Inicia o robô
+        # Inicia o robô via subprocesso isolado
         ws_url = build_ws_url(server_url)
         append_log(f"[🚀] Conectando motor {engine.upper()} ao WebSocket: {ws_url}")
         root.after(0, lambda: set_ui_state(True))
 
-        cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", engine]
+        if getattr(sys, 'frozen', False):
+            # Se estiver rodando como executável standalone PyInstaller
+            cmd = [sys.executable, "--run-client", str(script_path), "--url", ws_url, "--engine", engine]
+        else:
+            # Se estiver rodando como script python direto
+            cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", engine]
+
         try:
             client_proc = subprocess.Popen(
                 cmd,
@@ -424,6 +430,15 @@ def run_gui():
 # =============================================================================
 
 def main():
+    # Se chamado como subprocesso para executar o script do robô (PyInstaller bundle)
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-client":
+        client_script = sys.argv[2]
+        remaining_args = sys.argv[3:]
+        sys.argv = [client_script] + remaining_args
+        import runpy
+        runpy.run_path(client_script, run_name="__main__")
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(description="CBR Agents Desktop Launcher")
     parser.add_argument("--cli", action="store_true", help="Executar no modo terminal/CLI")
     args = parser.parse_args()
@@ -433,7 +448,6 @@ def main():
         # Execução CLI
         session = load_session()
         print("=== CBR AGENTS - MODO CLI ===")
-        # ... Modo terminal simples ...
         server_url = session.get("server_url") or DEFAULT_SERVER_URL
         token = session.get("token")
         if not token:
@@ -441,7 +455,10 @@ def main():
             sys.exit(1)
         script_path = sync_remote_client(server_url, token)
         ws_url = build_ws_url(server_url)
-        cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable, "--run-client", str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
+        else:
+            cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
         subprocess.run(cmd)
     else:
         try:
