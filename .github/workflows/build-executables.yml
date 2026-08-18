@@ -1,0 +1,133 @@
+name: Build Desktop Client Executables
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'client/**'
+      - 'requirements.txt'
+      - '.github/workflows/build-executables.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-windows:
+    name: Compilar Executável Windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar Dependências e PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      - name: Compilar Executável Standalone com PyInstaller
+        run: |
+          $launcherPath = if (Test-Path "client\launcher.py") { "client\launcher.py" } else { "launcher.py" }
+          pyinstaller --noconfirm --clean --onefile --name "CbrAgents-Client-Windows" $launcherPath
+
+      - name: Fazer Upload do Binário Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: CbrAgents-Client-Windows
+          path: dist/CbrAgents-Client-Windows.exe
+
+  build-linux:
+    name: Compilar Executável Linux (Binário ELF)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar Dependências e PyInstaller
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      - name: Compilar Executável Standalone com PyInstaller
+        run: |
+          LAUNCHER_PATH="client/launcher.py"
+          if [ ! -f "$LAUNCHER_PATH" ]; then
+            LAUNCHER_PATH="launcher.py"
+          fi
+          pyinstaller --noconfirm --clean --onefile --name "CbrAgents-Client-Linux" "$LAUNCHER_PATH"
+          chmod +x dist/CbrAgents-Client-Linux
+
+      - name: Fazer Upload do Binário Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: CbrAgents-Client-Linux
+          path: dist/CbrAgents-Client-Linux
+
+  publish-release:
+    name: Publicar Release com Executáveis
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Baixar Binários Compilados
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Criar Pacotes ZIP Complementares
+        run: |
+          mkdir -p release-final
+          cp release-assets/* release-final/ || true
+          
+          # Compacta pacotes zip com os scripts
+          if [ -d "client" ]; then
+            zip -r release-final/omni-playwright-client-linux.zip client/ requirements.txt || true
+          elif [ -d "linux" ]; then
+            zip -r release-final/omni-playwright-client-linux.zip linux/ launcher.py remote_client.py requirements.txt || true
+            zip -r release-final/omni-playwright-client-windows.zip windows/ launcher.py remote_client.py requirements.txt || true
+          fi
+
+      - name: Criar ou Atualizar GitHub Release 'latest'
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: latest
+          name: "CBR Agents Desktop Client v2.5 (Executáveis)"
+          body: |
+            ## 🚀 CBR Agents - Clientes de Automação Visual (WebPilot)
+
+            Executáveis e scripts oficiais para conexão do navegador local (Linux e Windows) ao **Estúdio IA**.
+
+            ### 📦 Arquivos Disponíveis:
+            - **Windows Executável Standalone:** `CbrAgents-Client-Windows.exe` (Duplo clique para abrir)
+            - **Linux Binário Standalone:** `CbrAgents-Client-Linux` (Executável nativo)
+            - **Pacote ZIP Linux:** `omni-playwright-client-linux.zip` (Com script `start.sh`)
+            - **Pacote ZIP Windows:** `omni-playwright-client-windows.zip` (Com script `start.bat`)
+
+            ### ✨ Recursos:
+            - **Login Seguro Integrado** com persistência em `~/.cbragents/session.json`.
+            - **Seleção Dinâmica de Motor:** `Playwright (Chromium)` ou `Camoufox (Firefox Stealth)`.
+            - **Auto-Atualização Contínua:** Sincroniza correções do `remote_client.py` em tempo real.
+          draft: false
+          prerelease: false
+          files: |
+            release-final/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
