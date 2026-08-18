@@ -1,0 +1,16 @@
+google-genai
+google-cloud-aiplatform
+python-dotenv
+pydantic
+google-adk
+psycopg[binary]
+pyjwt
+fastapi
+uvicorn
+python-multipart
+playwright
+playwright-stealth
+websockets
+pillow
+beautifulsoup4
+camoufox[geoip]
