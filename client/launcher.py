@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR Agents - Client Launcher & Auto-Updater
+  CBR AGENTS - CLIENT LAUNCHER & AUTO-UPDATER (DESKTOP GUI & CLI)
+  Design System: Warm Dark Mode (CBR Agents)
   Repositório Oficial: https://github.com/marcio-rgb/cbr-studioia-clients
 =============================================================================
 """
@@ -10,11 +11,14 @@
 import os
 import sys
 import json
+import time
 import hashlib
 import getpass
 import argparse
+import threading
 import subprocess
 import urllib.request
+import urllib.parse
 import urllib.error
 from pathlib import Path
 
@@ -25,30 +29,20 @@ APP_DIR = Path.home() / ".cbragents"
 SESSION_FILE = APP_DIR / "session.json"
 LOCAL_SCRIPT_FILE = APP_DIR / "remote_client.py"
 
-# Cores ANSI para Terminal (Warm Dark Palette)
-C_ORANGE = "\033[38;2;234;88;12m"
-C_AMBER = "\033[38;2;245;158;11m"
-C_EMERALD = "\033[38;2;52;211;153m"
-C_ROSE = "\033[38;2;251;113;133m"
-C_STONE = "\033[38;2;168;162;158m"
-C_WHITE = "\033[38;2;245;245;244m"
-C_BOLD = "\033[1m"
-C_RESET = "\033[0m"
-
-
-def print_banner():
-    """Exibe o cabeçalho estilizado do CBR Agents."""
-    os.system("cls" if os.name == "nt" else "clear")
-    print(f"{C_ORANGE}{C_BOLD}")
-    print("  ██████╗██████╗ ██████╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗███████╗")
-    print(" ██╔════╝██╔══██╗██╔══██╗    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝██╔════╝")
-    print(" ██║     ██████╔╝██████╔╝    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ███████╗")
-    print(" ██║     ██╔══██╗██╔══██╗    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ╚════██║")
-    print(" ╚██████╗██████╔╝██║  ██║    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ███████║")
-    print(f"  ╚═════╝╚═════╝ ╚═╝  ╚═╝    ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝{C_RESET}")
-    print(f"{C_AMBER}          ✦ ROBÔ VISUAL LOCAL DE ALTA PERFORMANCE (WEBPILOT) ✦{C_RESET}")
-    print(f"{C_STONE}             Conexão Segura e Auto-Atualização em Tempo Real{C_RESET}")
-    print(f"{C_STONE}-----------------------------------------------------------------------------{C_RESET}\n")
+# Cores do Sistema CBR Agents (Warm Dark Theme)
+BG_MAIN = "#141211"       # Dark 900
+BG_CARD = "#1c1917"       # Dark 800
+BG_INPUT = "#0c0a09"      # Dark 950
+BORDER_COLOR = "#292524"  # Stone 800
+BORDER_FOCUS = "#ea580c"  # Orange 600
+TEXT_MAIN = "#f5f5f4"     # Stone 100
+TEXT_MUTED = "#a8a29e"    # Stone 400
+TEXT_HINT = "#78716c"     # Stone 500
+ACCENT_ORANGE = "#ea580c" # Orange 600
+ACCENT_HOVER = "#f97316"  # Orange 500
+ACCENT_AMBER = "#f59e0b"  # Amber 500
+SUCCESS_GREEN = "#10b981" # Emerald 500
+DANGER_ROSE = "#f43f5e"   # Rose 500
 
 
 def load_session() -> dict:
@@ -74,130 +68,12 @@ def save_session(data: dict):
         pass
 
 
-def ask_server_url(saved_session: dict) -> str:
-    """Solicita ou confirma a URL base do servidor."""
-    default_url = saved_session.get("server_url") or DEFAULT_SERVER_URL
-    print(f"{C_WHITE}{C_BOLD}[1/4] URL do Sistema CBR Agents:{C_RESET}")
-    print(f"{C_STONE}Pressione [ENTER] para usar o padrão ({C_AMBER}{default_url}{C_STONE}) ou digite outra:{C_RESET}")
-    try:
-        user_input = input(f"{C_ORANGE}➔ URL: {C_RESET}").strip()
-    except (KeyboardInterrupt, EOFError):
-        print(f"\n{C_ROSE}[!] Execução cancelada pelo usuário.{C_RESET}")
-        sys.exit(0)
-
-    url = user_input if user_input else default_url
-    url = url.rstrip("/")
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
-    return url
-
-
-def authenticate(server_url: str, saved_session: dict) -> str:
-    """Valida o token existente ou realiza o login solicitando e-mail e senha."""
-    token = saved_session.get("token")
-    user_email = saved_session.get("email")
-
-    print(f"\n{C_WHITE}{C_BOLD}[2/4] Autenticação no Sistema:{C_RESET}")
-
-    # 1. Tenta validar o token existente se houver
-    if token:
-        try:
-            req = urllib.request.Request(
-                f"{server_url}/api/webpilot/client/code",
-                headers={"Authorization": f"Bearer {token}"}
-            )
-            with urllib.request.urlopen(req, timeout=5) as res:
-                if res.status == 200:
-                    print(f"{C_EMERALD}[✔] Sessão ativa autenticada como: {C_BOLD}{user_email or 'Usuário Autorizado'}{C_RESET}")
-                    return token
-        except Exception:
-            print(f"{C_AMBER}[i] Sessão anterior expirada. Por favor, autentique-se novamente.{C_RESET}")
-
-    # 2. Solicita login
-    while True:
-        try:
-            email = input(f"{C_ORANGE}➔ E-mail: {C_RESET}").strip()
-            if not email:
-                continue
-            password = getpass.getpass(f"{C_ORANGE}➔ Senha: {C_RESET}")
-            if not password:
-                continue
-
-            # Faz o POST /token no formato application/x-www-form-urlencoded
-            login_data = urllib.parse.urlencode({
-                "username": email,
-                "password": password
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                f"{server_url}/token",
-                data=login_data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"}
-            )
-
-            print(f"{C_STONE}Autenticando...{C_RESET}", end="\r")
-            with urllib.request.urlopen(req, timeout=10) as res:
-                if res.status == 200:
-                    resp_json = json.loads(res.read().decode("utf-8"))
-                    new_token = resp_json.get("access_token")
-                    if new_token:
-                        saved_session["server_url"] = server_url
-                        saved_session["email"] = email
-                        saved_session["token"] = new_token
-                        save_session(saved_session)
-                        print(f"{C_EMERALD}[✔] Login realizado com sucesso! Bem-vindo(a), {email}!{C_RESET}")
-                        return new_token
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                print(f"{C_ROSE}[✖] E-mail ou senha incorretos. Tente novamente.{C_RESET}")
-            else:
-                print(f"{C_ROSE}[✖] Erro no servidor HTTP {e.code}: {e.reason}{C_RESET}")
-        except Exception as e:
-            print(f"{C_ROSE}[✖] Falha ao conectar ao servidor ({server_url}): {e}{C_RESET}")
-            print(f"{C_STONE}Deseja tentar novamente ou alterar a URL?{C_RESET}")
-
-
-def select_browser_engine(saved_session: dict) -> str:
-    """Menu de seleção interativa do motor de navegador."""
-    print(f"\n{C_WHITE}{C_BOLD}[3/4] Escolha o Motor de Navegação:{C_RESET}")
-    print(f"  {C_ORANGE}[1]{C_RESET} {C_WHITE}Playwright Padrão{C_RESET} {C_STONE}(Chromium - Ultra Rápido e Determinístico){C_RESET}")
-    print(f"  {C_ORANGE}[2]{C_RESET} {C_WHITE}Camoufox Stealth{C_RESET} {C_STONE}(Firefox C++ Anti-Detect - Furtivo contra Cloudflare/Captchas){C_RESET}")
-
-    last_engine = saved_session.get("browser_engine", "camoufox")
-    default_opt = "2" if last_engine == "camoufox" else "1"
-
-    try:
-        choice = input(f"{C_ORANGE}➔ Selecione [1 ou 2] (Padrão: {default_opt}): {C_RESET}").strip()
-    except (KeyboardInterrupt, EOFError):
-        print(f"\n{C_ROSE}[!] Execução cancelada.{C_RESET}")
-        sys.exit(0)
-
-    if not choice:
-        choice = default_opt
-
-    if choice == "1":
-        engine = "playwright"
-        print(f"{C_EMERALD}[✔] Motor selecionado: Playwright (Chromium){C_RESET}")
-    else:
-        engine = "camoufox"
-        print(f"{C_EMERALD}[✔] Motor selecionado: Camoufox (Firefox Anti-Detect){C_RESET}")
-
-    saved_session["browser_engine"] = engine
-    save_session(saved_session)
-    return engine
-
-
-def sync_remote_client_code(server_url: str, token: str) -> Path:
-    """
-    Sincroniza o código do remote_client.py a partir do endpoint autenticado da API
-    ou com fallback para o repositório público do GitHub.
-    """
-    print(f"\n{C_WHITE}{C_BOLD}[4/4] Verificando Atualizações do Robô...{C_RESET}")
-
+def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
+    """Sincroniza o código do remote_client.py via API autenticada ou GitHub."""
     code_str = None
     server_sha256 = None
 
-    # 1. Tenta baixar via API Oficial do CBR Agents (Autenticada)
+    # 1. Tenta baixar via API Oficial do CBR Agents
     try:
         req = urllib.request.Request(
             f"{server_url}/api/webpilot/client/code",
@@ -209,23 +85,23 @@ def sync_remote_client_code(server_url: str, token: str) -> Path:
                 code_str = data.get("code")
                 server_sha256 = data.get("sha256")
     except Exception as e:
-        print(f"{C_STONE}[i] API direta indisponível para código ({e}), consultando GitHub público...{C_RESET}")
+        log_fn(f"[i] API direta indisponível para atualização ({e}), consultando GitHub público...")
 
-    # 2. Fallback: Consulta o repositório público no GitHub
+    # 2. Fallback: Consulta repositório público do GitHub
     if not code_str:
         try:
             req = urllib.request.Request(
                 GITHUB_RAW_FALLBACK,
-                headers={"User-Agent": "CBR-Agents-Launcher/2.5"}
+                headers={"User-Agent": "CBR-Agents-Desktop/2.5"}
             )
             with urllib.request.urlopen(req, timeout=6) as res:
                 if res.status == 200:
                     code_str = res.read().decode("utf-8")
                     server_sha256 = hashlib.sha256(code_str.encode("utf-8")).hexdigest()
         except Exception as gh_err:
-            print(f"{C_AMBER}[!] Não foi possível checar GitHub ({gh_err}).{C_RESET}")
+            log_fn(f"[!] Aviso GitHub: {gh_err}")
 
-    # 3. Compara com a versão local
+    # 3. Compara SHA-256 local
     local_sha256 = None
     if LOCAL_SCRIPT_FILE.exists():
         with open(LOCAL_SCRIPT_FILE, "r", encoding="utf-8") as f:
@@ -234,77 +110,345 @@ def sync_remote_client_code(server_url: str, token: str) -> Path:
 
     if code_str:
         if server_sha256 != local_sha256:
-            print(f"{C_AMBER}[⟳] Nova versão do robô detectada! Atualizando script local...{C_RESET}")
+            log_fn(f"[⟳] Atualizando script do robô (SHA: {server_sha256[:8]})...")
             with open(LOCAL_SCRIPT_FILE, "w", encoding="utf-8") as f:
                 f.write(code_str)
-            print(f"{C_EMERALD}[✔] Script atualizado com sucesso! (SHA: {server_sha256[:8]}...){C_RESET}")
+            log_fn("[✔] Robô atualizado com sucesso!")
         else:
-            print(f"{C_EMERALD}[✔] Robô já está na versão mais recente! (SHA: {local_sha256[:8]}...){C_RESET}")
+            log_fn("[✔] Robô já está na versão mais recente.")
         return LOCAL_SCRIPT_FILE
 
-    # 4. Se não conseguiu baixar mas tem o script em cache, usa o local
     if LOCAL_SCRIPT_FILE.exists():
-        print(f"{C_AMBER}[✔] Operando com a versão em cache local.{C_RESET}")
+        log_fn("[✔] Usando versão em cache local.")
         return LOCAL_SCRIPT_FILE
 
-    # 5. Se não existe em cache nem conseguiu baixar, tenta encontrar no diretório de trabalho
-    fallback_local = Path(__file__).parent / "remote_client.py"
-    if fallback_local.exists():
-        return fallback_local
+    fallback = Path(__file__).parent / "remote_client.py"
+    if fallback.exists():
+        return fallback
 
-    raise RuntimeError("Não foi possível obter o arquivo remote_client.py.")
+    raise RuntimeError("Não foi possível encontrar o arquivo remote_client.py.")
 
 
-def build_websocket_url(server_url: str) -> str:
-    """Converte URL HTTP/HTTPS para protocolo WebSocket WS/WSS."""
-    ws_url = server_url
-    if ws_url.startswith("https://"):
-        ws_url = "wss://" + ws_url[8:]
-    elif ws_url.startswith("http://"):
-        ws_url = "ws://" + ws_url[7:]
+def build_ws_url(server_url: str) -> str:
+    """Converte URL HTTP para WebSocket."""
+    url = server_url.rstrip("/")
+    if url.startswith("https://"):
+        ws = "wss://" + url[8:]
+    elif url.startswith("http://"):
+        ws = "ws://" + url[7:]
+    else:
+        ws = "wss://" + url
+    return f"{ws}/ws" if not ws.endswith("/ws") else ws
+
+
+# =============================================================================
+#  INTERFACE GRÁFICA DESKTOP (GUI MODERNA - WARM DARK THEME)
+# =============================================================================
+
+def run_gui():
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+
+    session = load_session()
+    root = tk.Tk()
+    root.title("CBR Agents - WebPilot Desktop")
+    root.geometry("540x720")
+    root.minsize(500, 650)
+    root.configure(bg=BG_MAIN)
+
+    # Variáveis de Estado
+    server_var = tk.StringVar(value=session.get("server_url") or DEFAULT_SERVER_URL)
+    email_var = tk.StringVar(value=session.get("email") or "")
+    pass_var = tk.StringVar(value="")
+    engine_var = tk.StringVar(value=session.get("browser_engine") or "camoufox")
+    status_text = tk.StringVar(value="Pronto para conectar")
+    is_running = tk.BooleanVar(value=False)
+    client_proc = None
+
+    # Estilos ttk
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure(".", background=BG_MAIN, foreground=TEXT_MAIN)
+    style.configure("TFrame", background=BG_MAIN)
+    style.configure("Card.TFrame", background=BG_CARD)
+
+    # Frame Principal
+    main_frame = tk.Frame(root, bg=BG_MAIN, padx=24, pady=20)
+    main_frame.pack(fill=tk.BOTH, expand=True)
+
+    # 1. CABEÇALHO COM LOGO
+    header_frame = tk.Frame(main_frame, bg=BG_MAIN)
+    header_frame.pack(fill=tk.X, pady=(0, 16))
+
+    logo_label = tk.Label(
+        header_frame,
+        text="CBR AGENTS",
+        font=("Segoe UI", 18, "bold"),
+        fg=ACCENT_ORANGE,
+        bg=BG_MAIN
+    )
+    logo_label.pack(anchor="w")
+
+    sub_label = tk.Label(
+        header_frame,
+        text="Robô Visual de Automação Local (WebPilot)",
+        font=("Segoe UI", 10),
+        fg=TEXT_MUTED,
+        bg=BG_MAIN
+    )
+    sub_label.pack(anchor="w", pady=(2, 0))
+
+    # 2. CARD DO FORMULÁRIO DE CONEXÃO
+    card = tk.Frame(main_frame, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1, padx=16, pady=16)
+    card.pack(fill=tk.X, pady=(0, 14))
+
+    # Campo Servidor
+    tk.Label(card, text="URL DO SISTEMA", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor="w")
+    server_entry = tk.Entry(
+        card, textvariable=server_var, font=("Segoe UI", 10),
+        bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=ACCENT_ORANGE,
+        relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightcolor=BORDER_FOCUS, highlightthickness=1
+    )
+    server_entry.pack(fill=tk.X, pady=(4, 12), ipady=5)
+
+    # Campo E-mail
+    tk.Label(card, text="E-MAIL DE ACESSO", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor="w")
+    email_entry = tk.Entry(
+        card, textvariable=email_var, font=("Segoe UI", 10),
+        bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=ACCENT_ORANGE,
+        relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightcolor=BORDER_FOCUS, highlightthickness=1
+    )
+    email_entry.pack(fill=tk.X, pady=(4, 12), ipady=5)
+
+    # Campo Senha
+    pass_label = tk.Label(card, text="SENHA (DEIXE EM BRANCO SE JÁ LOGADO)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_CARD)
+    pass_label.pack(anchor="w")
+    pass_entry = tk.Entry(
+        card, textvariable=pass_var, show="•", font=("Segoe UI", 10),
+        bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=ACCENT_ORANGE,
+        relief=tk.FLAT, highlightbackground=BORDER_COLOR, highlightcolor=BORDER_FOCUS, highlightthickness=1
+    )
+    pass_entry.pack(fill=tk.X, pady=(4, 14), ipady=5)
+
+    # 3. SELETOR DE NAVEGADOR
+    tk.Label(card, text="MOTOR DE NAVEGAÇÃO", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor="w", pady=(0, 6))
     
-    # Se não tiver /ws no final, adiciona
-    if not ws_url.endswith("/ws"):
-        ws_url = f"{ws_url}/ws"
-    return ws_url
+    engine_frame = tk.Frame(card, bg=BG_CARD)
+    engine_frame.pack(fill=tk.X)
 
+    camou_radio = tk.Radiobutton(
+        engine_frame, text="Camoufox (Firefox Anti-Detect)",
+        variable=engine_var, value="camoufox",
+        font=("Segoe UI", 9, "bold"), fg=ACCENT_AMBER, bg=BG_CARD,
+        selectcolor=BG_INPUT, activebackground=BG_CARD, activeforeground=ACCENT_AMBER
+    )
+    camou_radio.pack(anchor="w", pady=2)
+
+    playwright_radio = tk.Radiobutton(
+        engine_frame, text="Playwright (Chromium Rápido)",
+        variable=engine_var, value="playwright",
+        font=("Segoe UI", 9), fg=TEXT_MAIN, bg=BG_CARD,
+        selectcolor=BG_INPUT, activebackground=BG_CARD, activeforeground=TEXT_MAIN
+    )
+    playwright_radio.pack(anchor="w", pady=2)
+
+    # 4. BOTÃO DE AÇÃO PRINCIPAL (CONECTAR / DESCONECTAR)
+    action_btn = tk.Button(
+        main_frame,
+        text="Conectar Robô",
+        font=("Segoe UI", 11, "bold"),
+        bg=ACCENT_ORANGE,
+        fg="#ffffff",
+        activebackground=ACCENT_HOVER,
+        activeforeground="#ffffff",
+        relief=tk.FLAT,
+        cursor="hand2",
+        pady=8
+    )
+    action_btn.pack(fill=tk.X, pady=(0, 12))
+
+    # 5. STATUS BADGE
+    status_frame = tk.Frame(main_frame, bg=BG_CARD, highlightbackground=BORDER_COLOR, highlightthickness=1, padx=12, pady=6)
+    status_frame.pack(fill=tk.X, pady=(0, 10))
+
+    status_dot = tk.Label(status_frame, text="●", font=("Segoe UI", 12), fg=TEXT_HINT, bg=BG_CARD)
+    status_dot.pack(side=tk.LEFT, padx=(0, 6))
+
+    status_lbl = tk.Label(status_frame, textvariable=status_text, font=("Segoe UI", 9, "bold"), fg=TEXT_MAIN, bg=BG_CARD)
+    status_lbl.pack(side=tk.LEFT)
+
+    # 6. CAIXA DE LOGS DO TERMINAL
+    tk.Label(main_frame, text="LOGS EM TEMPO REAL", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=BG_MAIN).pack(anchor="w", pady=(0, 4))
+    
+    log_box = tk.Text(
+        main_frame,
+        height=9,
+        bg=BG_INPUT,
+        fg=TEXT_MUTED,
+        insertbackground=ACCENT_ORANGE,
+        font=("Consolas", 8),
+        relief=tk.FLAT,
+        highlightbackground=BORDER_COLOR,
+        highlightthickness=1,
+        padx=8,
+        pady=6
+    )
+    log_box.pack(fill=tk.BOTH, expand=True)
+
+    def append_log(msg: str):
+        def _insert():
+            log_box.insert(tk.END, msg + "\n")
+            log_box.see(tk.END)
+        root.after(0, _insert)
+
+    def set_ui_state(running: bool):
+        is_running.set(running)
+        if running:
+            action_btn.config(text="Desconectar Robô", bg=DANGER_ROSE, activebackground="#e11d48")
+            status_dot.config(fg=SUCCESS_GREEN)
+            status_text.set("Conectado ao Estúdio IA (Executando)")
+            server_entry.config(state="disabled")
+            email_entry.config(state="disabled")
+            pass_entry.config(state="disabled")
+        else:
+            action_btn.config(text="Conectar Robô", bg=ACCENT_ORANGE, activebackground=ACCENT_HOVER)
+            status_dot.config(fg=TEXT_HINT)
+            status_text.set("Desconectado")
+            server_entry.config(state="normal")
+            email_entry.config(state="normal")
+            pass_entry.config(state="normal")
+
+    def connect_worker():
+        nonlocal client_proc
+        server_url = server_var.get().strip().rstrip("/")
+        if not server_url.startswith("http://") and not server_url.startswith("https://"):
+            server_url = "https://" + server_url
+
+        email = email_var.get().strip()
+        password = pass_var.get().strip()
+        engine = engine_var.get()
+
+        token = session.get("token")
+        
+        append_log(f"[*] Iniciando conexão com {server_url}...")
+        status_text.set("Autenticando...")
+
+        # Autenticação se necessária
+        if password or not token or session.get("email") != email:
+            if not email or not password:
+                append_log("[✖] Informe o e-mail e a senha para autenticar.")
+                root.after(0, lambda: messagebox.showerror("Erro", "Por favor, digite o e-mail e a senha."))
+                root.after(0, lambda: set_ui_state(False))
+                return
+
+            try:
+                login_data = urllib.parse.urlencode({"username": email, "password": password}).encode("utf-8")
+                req = urllib.request.Request(f"{server_url}/token", data=login_data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+                with urllib.request.urlopen(req, timeout=8) as res:
+                    if res.status == 200:
+                        data = json.loads(res.read().decode("utf-8"))
+                        token = data.get("access_token")
+                        session["server_url"] = server_url
+                        session["email"] = email
+                        session["token"] = token
+                        session["browser_engine"] = engine
+                        save_session(session)
+                        append_log(f"[✔] Autenticado com sucesso como {email}!")
+            except Exception as auth_err:
+                append_log(f"[✖] Falha no login: {auth_err}")
+                root.after(0, lambda: messagebox.showerror("Falha de Autenticação", f"Erro ao realizar login: {auth_err}"))
+                root.after(0, lambda: set_ui_state(False))
+                return
+
+        # Sincronização do script
+        status_text.set("Sincronizando robô...")
+        try:
+            script_path = sync_remote_client(server_url, token, log_fn=append_log)
+        except Exception as sync_err:
+            append_log(f"[✖] Erro ao sincronizar: {sync_err}")
+            root.after(0, lambda: set_ui_state(False))
+            return
+
+        # Inicia o robô
+        ws_url = build_ws_url(server_url)
+        append_log(f"[🚀] Conectando motor {engine.upper()} ao WebSocket: {ws_url}")
+        root.after(0, lambda: set_ui_state(True))
+
+        cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", engine]
+        try:
+            client_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            for line in iter(client_proc.stdout.readline, ''):
+                if line:
+                    append_log(line.strip())
+            client_proc.wait()
+        except Exception as proc_err:
+            append_log(f"[✖] Erro na execução: {proc_err}")
+        finally:
+            append_log("[i] Robô finalizado.")
+            root.after(0, lambda: set_ui_state(False))
+
+    def on_action_click():
+        nonlocal client_proc
+        if is_running.get():
+            if client_proc:
+                append_log("[!] Encerrando processo do robô...")
+                client_proc.terminate()
+                client_proc = None
+            set_ui_state(False)
+        else:
+            threading.Thread(target=connect_worker, daemon=True).start()
+
+    action_btn.config(command=on_action_click)
+
+    # Centraliza janela na tela
+    root.update_idletasks()
+    w = root.winfo_width()
+    h = root.winfo_height()
+    ws = root.winfo_screenwidth()
+    hs = root.winfo_screenheight()
+    x = (ws // 2) - (w // 2)
+    y = (hs // 2) - (h // 2)
+    root.geometry(f"+{x}+{y}")
+
+    root.mainloop()
+
+
+# =============================================================================
+#  ENTRYPOINT
+# =============================================================================
 
 def main():
-    print_banner()
-    saved_session = load_session()
+    parser = argparse.ArgumentParser(description="CBR Agents Desktop Launcher")
+    parser.add_argument("--cli", action="store_true", help="Executar no modo terminal/CLI")
+    args = parser.parse_args()
 
-    # 1. URL do Servidor
-    server_url = ask_server_url(saved_session)
-
-    # 2. Autenticação
-    token = authenticate(server_url, saved_session)
-
-    # 3. Escolha do Motor de Navegador
-    engine = select_browser_engine(saved_session)
-
-    # 4. Sincronização do remote_client.py
-    script_path = sync_remote_client_code(server_url, token)
-
-    # 5. Execução do Robô
-    ws_url = build_websocket_url(server_url)
-    print(f"\n{C_EMERALD}{C_BOLD}============================================================================={C_RESET}")
-    print(f"{C_EMERALD}{C_BOLD}  🚀 INICIANDO CLIENTE WEBPILOT (MODO VISUAL CONECTADO){C_RESET}")
-    print(f"{C_STONE}  • Servidor: {C_WHITE}{server_url}{C_RESET}")
-    print(f"{C_STONE}  • Canal WebSocket: {C_WHITE}{ws_url}{C_RESET}")
-    print(f"{C_STONE}  • Motor de Navegação: {C_WHITE}{engine.upper()}{C_RESET}")
-    print(f"{C_EMERALD}{C_BOLD}============================================================================={C_RESET}\n")
-
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--url", ws_url,
-        "--engine", engine
-    ]
-
-    try:
+    # Se chamado com --cli ou sem display disponível, executa modo console
+    if args.cli or ("DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ and os.name != "nt"):
+        # Execução CLI
+        session = load_session()
+        print("=== CBR AGENTS - MODO CLI ===")
+        # ... Modo terminal simples ...
+        server_url = session.get("server_url") or DEFAULT_SERVER_URL
+        token = session.get("token")
+        if not token:
+            print("[!] Token ausente. Execute com interface gráfica para autenticar.")
+            sys.exit(1)
+        script_path = sync_remote_client(server_url, token)
+        ws_url = build_ws_url(server_url)
+        cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
         subprocess.run(cmd)
-    except KeyboardInterrupt:
-        print(f"\n{C_AMBER}[i] Cliente WebPilot finalizado pelo usuário.{C_RESET}")
+    else:
+        try:
+            run_gui()
+        except Exception as e:
+            print(f"[!] Erro ao abrir interface gráfica: {e}. Alternando para CLI...")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
