@@ -14,4 +14,4 @@ websockets
 pillow
 beautifulsoup4
 camoufox[geoip]
-
+redis>=5.0.0
