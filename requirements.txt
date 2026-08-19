@@ -14,3 +14,4 @@ websockets
 pillow
 beautifulsoup4
 camoufox[geoip]
+pypdf
