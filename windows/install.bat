@@ -33,7 +33,15 @@ echo @echo off
 echo TITLE Omni Playwright Remote Client
 echo echo Conectando ao Servidor VPS: ws://ia.creditobr.com.br:8384 ...
 echo call .venv\Scripts\activate.bat
-echo python remote_playwright_client.py --url ws://ia.creditobr.com.br:8384
+echo if exist "launcher.py" (
+echo     python launcher.py %%*
+echo ^) else if exist "..\launcher.py" (
+echo     python ..\launcher.py %%*
+echo ^) else if exist "remote_client.py" (
+echo     python remote_client.py --url ws://ia.creditobr.com.br:8384 %%*
+echo ^) else (
+echo     python ..\remote_client.py --url ws://ia.creditobr.com.br:8384 %%*
+echo ^)
 echo pause
 ) > start_client.bat
 
@@ -43,3 +51,4 @@ echo   Instalacao concluida com sucesso!
 echo   Execute 'start_client.bat' para conectar a VPS.
 echo ========================================================
 pause
+

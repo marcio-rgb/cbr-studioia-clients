@@ -3,7 +3,7 @@ google-cloud-aiplatform
 python-dotenv
 pydantic
 google-adk
-psycopg[binary]
+psycopg[binary,pool]>=3.1.0
 pyjwt
 fastapi
 uvicorn
