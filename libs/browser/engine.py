@@ -17,7 +17,10 @@ import asyncio
 import time
 import re
 import random
+import logging
 from typing import Optional, Dict, Any, List, Tuple, Union
+
+logger = logging.getLogger("Browser.Engine")
 
 # Limpa bloqueio de diretório se configurado incorretamente
 if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == "0":
