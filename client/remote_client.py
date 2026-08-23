@@ -27,13 +27,14 @@ from typing import Optional, Dict, Any, Tuple, Union
 if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == "0":
     os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
 
-# Adiciona o diretório raiz do projeto e o diretório do script ao sys.path
+# Adiciona os caminhos de busca ao sys.path (~/.cbragents, diretório atual e raiz do projeto)
 _current_dir = os.path.dirname(os.path.abspath(__file__))
+_app_dir = os.path.expanduser("~/.cbragents")
 _project_root = os.path.abspath(os.path.join(_current_dir, ".."))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
+
+for p in [_app_dir, _current_dir, _project_root]:
+    if p and os.path.exists(p) and p not in sys.path:
+        sys.path.insert(0, p)
 
 try:
     import websockets
@@ -47,7 +48,12 @@ except ImportError:
     print("❌ Pacote 'playwright' não encontrado. Instale com: pip install playwright && playwright install")
     sys.exit(1)
 
-# Importa o motor unificado e a classe BrowserTools
+# Importa o motor unificado e a classe BrowserTools com auto-recuperação
+BrowserTools = None
+execute_browser_action = None
+execute_code_sandbox = None
+inspect_dom = None
+
 try:
     from libs.browser.engine import (
         BrowserTools,
@@ -63,9 +69,30 @@ except ImportError:
             execute_code_sandbox,
             inspect_dom
         )
-    except ImportError as e:
-        print(f"❌ Erro ao importar o motor unificado 'engine.py': {e}")
-        sys.exit(1)
+    except ImportError:
+        # Fallback de emergência: baixa engine.py para ~/.cbragents se estiver ausente
+        try:
+            os.makedirs(_app_dir, exist_ok=True)
+            local_eng_path = os.path.join(_app_dir, "engine.py")
+            if not os.path.exists(local_eng_path) or os.path.getsize(local_eng_path) == 0:
+                print("🔄 Baixando motor unificado 'engine.py' do repositório oficial...")
+                gh_eng_url = "https://raw.githubusercontent.com/marcio-rgb/cbr-studioia-clients/main/engine.py"
+                req = urllib.request.Request(gh_eng_url, headers={"User-Agent": "CBR-Agents-Desktop/2.5"})
+                with urllib.request.urlopen(req, timeout=8) as res:
+                    if res.status == 200:
+                        with open(local_eng_path, "w", encoding="utf-8") as f:
+                            f.write(res.read().decode("utf-8"))
+                        if _app_dir not in sys.path:
+                            sys.path.insert(0, _app_dir)
+            from engine import (
+                BrowserTools,
+                execute_browser_action,
+                execute_code_sandbox,
+                inspect_dom
+            )
+        except Exception as fallback_err:
+            print(f"❌ Erro ao carregar o motor unificado 'engine.py': {fallback_err}")
+            sys.exit(1)
 
 # =============================================================================
 # SHIM DE COMPATIBILIDADE RETROATIVA (MOCK DO PACOTE LIBS PARA CLIENTE STANDALONE)

@@ -87,9 +87,12 @@ def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
     """Sincroniza o código do remote_client.py e engine.py via API autenticada ou local."""
     code_str = None
     server_sha256 = None
+    engine_str = None
 
     # Garante cópia local do engine.py se existir no repositório
     repo_engine = Path(__file__).resolve().parent.parent / "libs" / "browser" / "engine.py"
+    if not repo_engine.exists():
+        repo_engine = Path(__file__).resolve().parent / "engine.py"
     if repo_engine.exists():
         try:
             with open(repo_engine, "r", encoding="utf-8") as f:
@@ -117,7 +120,19 @@ def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
     except Exception as e:
         log_fn(f"[i] API direta indisponível para atualização ({e}), consultando GitHub público...")
 
-    # 2. Fallback: Consulta repositório público do GitHub
+    # 2. Fallback: Se não tiver engine.py baixado, baixa direto do GitHub público
+    if not LOCAL_ENGINE_FILE.exists() or LOCAL_ENGINE_FILE.stat().st_size == 0 or not engine_str:
+        try:
+            gh_engine_url = "https://raw.githubusercontent.com/marcio-rgb/cbr-studioia-clients/main/engine.py"
+            req_eng = urllib.request.Request(gh_engine_url, headers={"User-Agent": "CBR-Agents-Desktop/2.5"})
+            with urllib.request.urlopen(req_eng, timeout=6) as res_eng:
+                if res_eng.status == 200:
+                    with open(LOCAL_ENGINE_FILE, "w", encoding="utf-8") as ef:
+                        ef.write(res_eng.read().decode("utf-8"))
+        except Exception as gh_eng_err:
+            log_fn(f"[!] Aviso ao baixar engine.py do GitHub: {gh_eng_err}")
+
+    # 3. Fallback: Consulta repositório público do GitHub para remote_client.py
     if not code_str:
         try:
             req = urllib.request.Request(
@@ -131,7 +146,7 @@ def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
         except Exception as gh_err:
             log_fn(f"[!] Aviso GitHub: {gh_err}")
 
-    # 3. Compara SHA-256 local
+    # 4. Compara SHA-256 local
     local_sha256 = None
     if LOCAL_SCRIPT_FILE.exists():
         with open(LOCAL_SCRIPT_FILE, "r", encoding="utf-8") as f:
@@ -470,6 +485,14 @@ def handle_python_internal_args():
         client_script = argv[1]
         remaining_args = argv[2:]
         sys.argv = [client_script] + remaining_args
+
+        # Adiciona o diretório do script e APP_DIR ao sys.path
+        script_dir = os.path.dirname(os.path.abspath(client_script))
+        app_dir_str = str(APP_DIR)
+        for p in [script_dir, app_dir_str]:
+            if p and p not in sys.path:
+                sys.path.insert(0, p)
+
         import runpy
         runpy.run_path(client_script, run_name="__main__")
         sys.exit(0)
