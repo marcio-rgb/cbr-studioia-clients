@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'client/**'
+      - 'libs/browser/engine.py'
+      - 'engine.py'
       - 'requirements.txt'
       - '.github/workflows/build-executables.yml'
   workflow_dispatch:
@@ -33,6 +35,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller -r requirements.txt
 
+      - name: Preparar Estrutura de Módulos
+        run: |
+          if (Test-Path "libs\browser\engine.py") {
+            Copy-Item "libs\browser\engine.py" -Destination "engine.py" -Force
+          }
+
       - name: Compilar Executável Standalone com PyInstaller
         run: |
           $launcherPath = if (Test-Path "client\launcher.py") { "client\launcher.py" } else { "launcher.py" }
@@ -55,6 +63,7 @@ jobs:
             --hidden-import="multiprocessing.resource_tracker" `
             --hidden-import="runpy" `
             --hidden-import="tkinter" `
+            --hidden-import="engine" `
             $launcherPath
 
       - name: Fazer Upload do Binário Windows
@@ -81,6 +90,12 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install pyinstaller -r requirements.txt
 
+      - name: Preparar Estrutura de Módulos
+        run: |
+          if [ -f "libs/browser/engine.py" ]; then
+            cp libs/browser/engine.py engine.py
+          fi
+
       - name: Compilar Executável Standalone com PyInstaller
         run: |
           LAUNCHER_PATH="client/launcher.py"
@@ -106,6 +121,7 @@ jobs:
             --hidden-import="multiprocessing.resource_tracker" \
             --hidden-import="runpy" \
             --hidden-import="tkinter" \
+            --hidden-import="engine" \
             "$LAUNCHER_PATH"
           chmod +x dist/CbrAgents-Client-Linux
 
@@ -129,18 +145,10 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Criar Pacotes ZIP Complementares
+      - name: Preparar Arquivos para Release
         run: |
           mkdir -p release-final
           cp release-assets/* release-final/ || true
-          
-          # Compacta pacotes zip com os scripts
-          if [ -d "client" ]; then
-            zip -r release-final/omni-playwright-client-linux.zip client/ requirements.txt || true
-          elif [ -d "linux" ]; then
-            zip -r release-final/omni-playwright-client-linux.zip linux/ launcher.py remote_client.py requirements.txt || true
-            zip -r release-final/omni-playwright-client-windows.zip windows/ launcher.py remote_client.py requirements.txt || true
-          fi
 
       - name: Criar ou Atualizar GitHub Release 'latest'
         uses: softprops/action-gh-release@v2
@@ -151,18 +159,17 @@ jobs:
           body: |
             ## 🚀 CBR Agents - Clientes de Automação Visual (WebPilot)
 
-            Executáveis e scripts oficiais para conexão do navegador local (Linux e Windows) ao **Estúdio IA**.
+            Executáveis oficiais standalone (Linux e Windows) para conexão do navegador local ao **Estúdio IA**.
 
-            ### 📦 Arquivos Disponíveis:
+            ### 📦 Binários Oficiais:
             - **Windows Executável Standalone:** `CbrAgents-Client-Windows.exe` (Duplo clique para abrir)
-            - **Linux Binário Standalone:** `CbrAgents-Client-Linux` (Executável nativo)
-            - **Pacote ZIP Linux:** `omni-playwright-client-linux.zip` (Com script `start.sh`)
-            - **Pacote ZIP Windows:** `omni-playwright-client-windows.zip` (Com script `start.bat`)
+            - **Linux Binário Standalone:** `CbrAgents-Client-Linux` (Executável nativo ELF)
 
             ### ✨ Recursos:
+            - **Novo SDK Tools Embutido:** Execução resiliente com tratamento unificado de parâmetros, SPAs e extrações.
             - **Login Seguro Integrado** com persistência em `~/.cbragents/session.json`.
             - **Seleção Dinâmica de Motor:** `Playwright (Chromium)` ou `Camoufox (Firefox Stealth)`.
-            - **Auto-Atualização Contínua:** Sincroniza correções do `remote_client.py` em tempo real.
+            - **Auto-Atualização Contínua:** Sincroniza correções do `remote_client.py` e `engine.py` em tempo real.
           draft: false
           prerelease: false
           files: |

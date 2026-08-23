@@ -42,6 +42,7 @@ GITHUB_RAW_FALLBACK = "https://raw.githubusercontent.com/marcio-rgb/cbr-studioia
 APP_DIR = Path.home() / ".cbragents"
 SESSION_FILE = APP_DIR / "session.json"
 LOCAL_SCRIPT_FILE = APP_DIR / "remote_client.py"
+LOCAL_ENGINE_FILE = APP_DIR / "engine.py"
 
 # Cores do Sistema CBR Agents (Warm Dark Theme)
 BG_MAIN = "#141211"       # Dark 900
@@ -83,9 +84,20 @@ def save_session(data: dict):
 
 
 def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
-    """Sincroniza o código do remote_client.py via API autenticada ou GitHub."""
+    """Sincroniza o código do remote_client.py e engine.py via API autenticada ou local."""
     code_str = None
     server_sha256 = None
+
+    # Garante cópia local do engine.py se existir no repositório
+    repo_engine = Path(__file__).resolve().parent.parent / "libs" / "browser" / "engine.py"
+    if repo_engine.exists():
+        try:
+            with open(repo_engine, "r", encoding="utf-8") as f:
+                engine_content = f.read()
+            with open(LOCAL_ENGINE_FILE, "w", encoding="utf-8") as f:
+                f.write(engine_content)
+        except Exception:
+            pass
 
     # 1. Tenta baixar via API Oficial do CBR Agents
     try:
@@ -98,6 +110,10 @@ def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
                 data = json.loads(res.read().decode("utf-8"))
                 code_str = data.get("code")
                 server_sha256 = data.get("sha256")
+                engine_str = data.get("engine_code")
+                if engine_str:
+                    with open(LOCAL_ENGINE_FILE, "w", encoding="utf-8") as ef:
+                        ef.write(engine_str)
     except Exception as e:
         log_fn(f"[i] API direta indisponível para atualização ({e}), consultando GitHub público...")
 
