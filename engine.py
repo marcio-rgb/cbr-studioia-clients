@@ -193,20 +193,33 @@ class BrowserTools:
         self._downloaded_files: List[str] = []
         self._captured_output: Any = None
 
-        # Normalização de parâmetros de entrada (suporta string JSON ou dict)
+        # Normalização de parâmetros de entrada (suporta string JSON, dict aninhado ou objeto)
         self._params: Dict[str, Any] = {}
         if params:
             if isinstance(params, dict):
                 self._params = dict(params)
+                # Se vier aninhado em test_input_mock ou params
+                if "test_input_mock" in self._params and isinstance(self._params["test_input_mock"], dict):
+                    self._params.update(self._params["test_input_mock"])
+                if "params" in self._params and isinstance(self._params["params"], dict):
+                    self._params.update(self._params["params"])
             elif isinstance(params, str) and params.strip():
                 try:
                     parsed = json.loads(params.strip())
                     if isinstance(parsed, dict):
                         self._params = parsed
+                        if "test_input_mock" in self._params and isinstance(self._params["test_input_mock"], dict):
+                            self._params.update(self._params["test_input_mock"])
                     else:
                         self._params = {"raw_input": parsed}
                 except Exception:
                     self._params = {"raw_input": params.strip()}
+
+        # Agrega credenciais se não presentes em params
+        if self._login_user and "login_user" not in self._params and "user" not in self._params:
+            self._params["login_user"] = self._login_user
+        if self._login_pass and "login_pass" not in self._params and "senha" not in self._params and "password" not in self._params:
+            self._params["login_pass"] = self._login_pass
 
     # -------------------------------------------------------------------------
     # Getters / Setters de Sessão e Propriedades
@@ -233,8 +246,52 @@ class BrowserTools:
     # Gestão de Parâmetros e Credenciais (Início da Execução)
     # -------------------------------------------------------------------------
     def get_param(self, key: str, default: Any = None) -> Any:
-        """Obtém o valor de um parâmetro de entrada/mock pelo nome."""
-        return self._params.get(key, default)
+        """Obtém o valor de um parâmetro de entrada/mock pelo nome com fallback inteligente."""
+        if not key:
+            return default
+        if key in self._params and self._params[key] is not None:
+            return self._params[key]
+            
+        k = key.strip().lower()
+        for pk, pv in self._params.items():
+            if pk.strip().lower() == k and pv is not None:
+                return pv
+
+        # Fallbacks semânticos automáticos
+        if k in ("cpf", "login_cpf", "user", "login_user", "usuario", "login", "username"):
+            return (
+                self._params.get("cpf") or
+                self._params.get("login_user") or
+                self._params.get("user") or
+                self._params.get("login") or
+                self._login_user or
+                os.environ.get("LOGIN_USER") or
+                os.environ.get("LOGIN_CPF") or
+                os.environ.get("CPF") or
+                default
+            )
+        if k in ("senha", "pwd", "password", "login_pass", "pass"):
+            return (
+                self._params.get("senha") or
+                self._params.get("pwd") or
+                self._params.get("password") or
+                self._params.get("login_pass") or
+                self._login_pass or
+                os.environ.get("LOGIN_PASS") or
+                os.environ.get("SENHA") or
+                default
+            )
+        if k in ("identificador", "matricula", "mat", "id", "beneficio"):
+            return (
+                self._params.get("identificador") or
+                self._params.get("matricula") or
+                self._params.get("mat") or
+                os.environ.get("LOGIN_MATRICULA") or
+                os.environ.get("MATRICULA") or
+                default
+            )
+
+        return default
 
     def get_params(self) -> Dict[str, Any]:
         """Retorna o dicionário completo de parâmetros de entrada."""
@@ -554,7 +611,7 @@ class BrowserTools:
                 if api_key:
                     client = genai.Client(api_key=api_key)
                     resp = await client.aio.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.5-flash",
                         contents=[
                             types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
                             "Retorne APENAS os caracteres do texto do captcha nesta imagem, sem pontuações ou explicações."
