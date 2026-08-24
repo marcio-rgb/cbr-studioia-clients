@@ -319,22 +319,28 @@ class BrowserTools:
             raise ValueError("Credenciais de acesso (usuário e senha) são obrigatórias para este passo.")
         return self._login_user, self._login_pass
 
-    # -------------------------------------------------------------------------
-    # Gestão de Saída de Dados e Arquivos (Final da Execução)
-    # -------------------------------------------------------------------------
     def set_output(self, data: Any) -> None:
-        """Grava dados estruturados de saída e emite log formatado com [JSON_RESULT]."""
-        self._captured_output = data
+        """Grava dados estruturados de saída, mesclando dicionários e emitindo [JSON_RESULT] em linha única."""
+        if data is None:
+            return
+            
+        if isinstance(self._captured_output, dict) and isinstance(data, dict):
+            self._captured_output.update(data)
+            out_data = self._captured_output
+        else:
+            self._captured_output = data
+            out_data = data
+
         if callable(self._set_output_fn):
             try:
-                self._set_output_fn(data)
+                self._set_output_fn(out_data)
             except Exception:
                 pass
         try:
-            json_str = json.dumps(data, ensure_ascii=False)
+            json_str = json.dumps(out_data, ensure_ascii=False)
             print(f"[JSON_RESULT] {json_str}")
         except Exception:
-            print(f"[JSON_RESULT] {data}")
+            print(f"[JSON_RESULT] {out_data}")
 
     def set_result(
         self,
@@ -862,12 +868,10 @@ async def execute_code_sandbox(
                         return _fn_res
                 except Exception:
                     pass
-        if 'data' in _locs and _locs['data'] is not None:
-            set_output(_locs['data'])
-            return _locs['data']
-        if 'dados' in _locs and _locs['dados'] is not None:
-            set_output(_locs['dados'])
-            return _locs['dados']
+        for _v_key in ('resultado', 'result', 'output', 'data', 'dados', 'extracted_data', 'final_result', 'dados_extraidos', 'contratos', 'margem', 'res'):
+            if _v_key in _locs and _locs[_v_key] is not None:
+                set_output(_locs[_v_key])
+                return _locs[_v_key]
 """
             local_ns = {}
             exec(wrapper, global_context, local_ns)
@@ -912,6 +916,7 @@ async def execute_code_sandbox(
         "status": "success",
         "result": "Executado com sucesso",
         "data": structured_data,
+        "json_result": structured_data,
         "logs": stdout_buffer.getvalue(),
         "downloaded_files": tools_instance.get_downloaded_files()
     }
