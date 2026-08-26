@@ -22,12 +22,340 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List, Tuple, Union
 
-# Importações dos submódulos especializados
-from libs.browser.dom_inspector import inspect_dom
-from libs.browser.captcha import CaptchaSolver, solve_captcha_image
-from libs.browser.sandbox import execute_code_sandbox, TeeStream
-from libs.browser.action_dispatcher import execute_browser_action
-from libs.browser.launcher import init_browser_engine
+try:
+    from libs.browser.dom_inspector import inspect_dom
+    from libs.browser.captcha import CaptchaSolver, solve_captcha_image
+    from libs.browser.sandbox import execute_code_sandbox, TeeStream
+    from libs.browser.action_dispatcher import execute_browser_action
+    from libs.browser.launcher import init_browser_engine
+except ImportError:
+    # =========================================================================
+    # IMPLEMENTAÇÃO STANDALONE COMPLETA (CLIENTE DESKTOP / RUNTIME ISOLADO)
+    # =========================================================================
+    
+    class TeeStream:
+        def __init__(self, orig, buf):
+            self.orig = orig
+            self.buf = buf
+
+        def write(self, s):
+            try:
+                self.orig.write(s)
+            except Exception:
+                pass
+            self.buf.write(s)
+
+        def flush(self):
+            try:
+                self.orig.flush()
+            except Exception:
+                pass
+            self.buf.flush()
+
+    class CaptchaSolver:
+        @classmethod
+        async def solve(cls, page: Any, selector: str) -> str:
+            if not page:
+                raise RuntimeError("Página do navegador não inicializada.")
+
+            el = await page.query_selector(selector)
+            if not el:
+                for s in [selector, f"img{selector}", f"#{selector.lstrip('#')}", "img[id*='captcha' i]", "img[src*='captcha' i]", "#cipCaptchaImg", "#captchaImg"]:
+                    try:
+                        el = await page.query_selector(s)
+                        if el:
+                            break
+                    except Exception:
+                        pass
+
+            if not el:
+                raise ValueError(f"Elemento de captcha '{selector}' não encontrado no DOM.")
+
+            try:
+                await el.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+
+            img_bytes = None
+            try:
+                img_bytes = await el.screenshot()
+            except Exception:
+                try:
+                    el = await page.query_selector(selector)
+                    if el:
+                        img_bytes = await el.screenshot()
+                except Exception as e:
+                    raise ValueError(f"Não foi possível capturar imagem do captcha: {e}")
+
+            if not img_bytes:
+                raise ValueError("Imagem do captcha vazia.")
+
+            captcha_text = ""
+            try:
+                import ddddocr
+                ocr = ddddocr.DdddOcr(show_ad=False)
+                captcha_text = ocr.classification(img_bytes)
+            except Exception:
+                pass
+
+            if not captcha_text:
+                try:
+                    import urllib.request
+                    b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                    server_url = os.environ.get("CBR_SERVER_URL") or "https://ia.creditobr.com.br"
+                    token = os.environ.get("CBR_AUTH_TOKEN") or ""
+                    
+                    app_session = os.path.expanduser("~/.cbragents/session.json")
+                    if os.path.exists(app_session):
+                        try:
+                            with open(app_session, "r", encoding="utf-8") as sf:
+                                sdata = json.load(sf)
+                                if sdata.get("server_url"):
+                                    server_url = sdata.get("server_url").rstrip("/")
+                                if sdata.get("token"):
+                                    token = sdata.get("token")
+                        except Exception:
+                            pass
+                    
+                    req_url = f"{server_url}/api/webpilot/solve-captcha"
+                    req_payload = json.dumps({"b64_image": b64_img, "mime_type": "image/png"}).encode("utf-8")
+                    headers = {"Content-Type": "application/json", "User-Agent": "CBR-Agents-Engine/2.5"}
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    req = urllib.request.Request(req_url, data=req_payload, headers=headers)
+                    with urllib.request.urlopen(req, timeout=15) as res:
+                        if res.status == 200:
+                            resp_dict = json.loads(res.read().decode("utf-8"))
+                            captcha_text = resp_dict.get("text", "").strip()
+                except Exception:
+                    pass
+
+            if not captcha_text:
+                raise RuntimeError("Não foi possível resolver o captcha automaticamente.")
+            return captcha_text
+
+    async def solve_captcha_image(page: Any, selector: str) -> str:
+        return await CaptchaSolver.solve(page, selector)
+
+    async def inspect_dom(page: Any) -> str:
+        if not page:
+            return "Nenhuma página ativa para inspeção."
+        js_code = """
+        () => {
+            const elements = [];
+            const query = 'input, button, a, select, textarea, label, img, [role], [onclick], [ng-click], [\\\\@click], [v-on\\\\:click]';
+            
+            function scanDocument(doc, frameName = '') {
+                try {
+                    const nodes = doc.querySelectorAll(query);
+                    nodes.forEach((el) => {
+                        const tag = el.tagName.toLowerCase();
+                        const style = window.getComputedStyle(el);
+                        if (style && style.display === 'none' && !['input', 'select', 'textarea'].includes(tag)) return;
+                        
+                        let selector = '';
+                        let xpath = '';
+                        const id = el.id ? el.id.trim() : null;
+                        const name = el.getAttribute('name') ? el.getAttribute('name').trim() : null;
+                        const type = el.getAttribute('type') ? el.getAttribute('type').trim() : null;
+                        const placeholder = el.getAttribute('placeholder') ? el.getAttribute('placeholder').trim() : null;
+                        const text = (el.textContent || el.value || '').trim().substring(0, 60).replace(/\\s+/g, ' ');
+                        const ariaLabel = el.getAttribute('aria-label') || el.getAttribute('title') || null;
+
+                        if (id) { selector = `#${id}`; xpath = `//${tag}[@id="${id}"]`; }
+                        else if (name) { selector = `${tag}[name="${name}"]`; xpath = `//${tag}[@name="${name}"]`; }
+                        else if (type && tag === 'input') { selector = `input[type="${type}"]`; xpath = `//input[@type="${type}"]`; }
+                        else if (placeholder) { selector = `${tag}[placeholder="${placeholder}"]`; xpath = `//${tag}[@placeholder="${placeholder}"]`; }
+                        else if (ariaLabel) { selector = `${tag}[aria-label="${ariaLabel}"]`; xpath = `//${tag}[@aria-label="${ariaLabel}"]`; }
+                        else if (text && text.length > 0 && text.length < 40) {
+                            const cleanText = text.replace(/"/g, '\\"');
+                            selector = `${tag}:has-text("${cleanText}")`;
+                            xpath = `//${tag}[contains(text(), "${cleanText}")]`;
+                        } else {
+                            const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').filter(c => c).join('.')}` : '';
+                            selector = `${tag}${cls}`;
+                            xpath = `//${tag}`;
+                        }
+
+                        elements.push({ frame: frameName, tag: tag.toUpperCase(), id, name, type, placeholder, text, ariaLabel, selector, xpath });
+                    });
+                } catch (err) {}
+            }
+            scanDocument(document, 'main');
+            return elements.slice(0, 80);
+        }
+        """
+        try:
+            title = await page.title()
+            url = page.url
+            output = [f"PÁGINA ATUAL: {url}", f"TÍTULO: {title}"]
+            elements = await page.evaluate(js_code)
+            for idx, el in enumerate(elements):
+                info = f"[{idx + 1}] <{el['tag']}> Seletor: `{el['selector']}`"
+                if el.get("text"): info += f" | Texto: \"{el['text']}\""
+                if el.get("name"): info += f" | Name: \"{el['name']}\""
+                if el.get("id"): info += f" | ID: \"{el['id']}\""
+                output.append(info)
+            return "\n".join(output)
+        except Exception as e:
+            return f"Erro ao inspecionar DOM: {e}"
+
+    async def execute_code_sandbox(page, context, browser, p_obj, code_str: str, login_user: str = "", login_pass: str = "", extra_context: Optional[Dict[str, Any]] = None, register_download_fn=None) -> Dict[str, Any]:
+        import textwrap
+        clean_code = code_str.strip()
+        captured_output = getattr(page, "_accumulated_output", None) if page else None
+
+        def set_output(data):
+            nonlocal captured_output
+            if data is None: return
+            if page:
+                if not hasattr(page, "_accumulated_output") or page._accumulated_output is None:
+                    try: page._accumulated_output = dict(data) if isinstance(data, dict) else data
+                    except Exception: page._accumulated_output = data
+                    captured_output = page._accumulated_output
+                elif isinstance(page._accumulated_output, dict) and isinstance(data, dict):
+                    for k, v in data.items():
+                        if v is not None and v != "" and v != [] and v != {}:
+                            page._accumulated_output[k] = v
+                        elif k not in page._accumulated_output:
+                            page._accumulated_output[k] = v
+                    captured_output = page._accumulated_output
+                elif isinstance(page._accumulated_output, list) and isinstance(data, list):
+                    page._accumulated_output.extend(data)
+                    captured_output = page._accumulated_output
+                else:
+                    page._accumulated_output = data
+                    captured_output = data
+            else:
+                captured_output = data
+
+        stdout_buffer = io.StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = TeeStream(original_stdout, stdout_buffer)
+
+        tools_instance = BrowserTools(
+            page=page, context=context, browser=browser, playwright=p_obj,
+            login_user=login_user, login_pass=login_pass,
+            params=(extra_context or {}).get("params"),
+            set_output_fn=set_output, register_download_fn=register_download_fn
+        )
+
+        try:
+            global_context = {
+                "tools": tools_instance, "page": page, "context": context, "browser": browser,
+                "playwright": p_obj, "p": p_obj, "asyncio": asyncio, "json": json,
+                "set_output": set_output, "login_user": login_user, "login_pass": login_pass,
+                "params": tools_instance.get_params(), "time": time, "re": re, "random": random, "os": os, "sys": sys
+            }
+            if extra_context: global_context.update(extra_context)
+
+            if "async def main" in clean_code or "def main" in clean_code:
+                script_ns = dict(global_context)
+                exec(clean_code, script_ns)
+                main_fn = script_ns.get("main")
+                if main_fn:
+                    exec_res = await main_fn() if asyncio.iscoroutinefunction(main_fn) else main_fn()
+                else:
+                    exec_res = "Main executado"
+            else:
+                dedented_code = textwrap.dedent(clean_code).strip()
+                indented = "\n".join("        " + line for line in dedented_code.split('\n'))
+                wrapper = f"""async def __snippet_runner(tools, page, context, browser, playwright, p, asyncio, set_output, login_user, login_pass, params):
+{indented}
+        _locs = locals()
+        for _k, _v in list(_locs.items()):
+            if callable(_v) and _k not in ('tools', 'page', 'context', 'browser', 'playwright', 'p', 'asyncio', 'set_output', 'login_user', 'login_pass', 'params') and not _k.startswith('__'):
+                try:
+                    import inspect
+                    sig = inspect.signature(_v)
+                    params_count = len(sig.parameters)
+                    _fn_res = await (_v(tools) if params_count >= 1 else _v()) if asyncio.iscoroutinefunction(_v) else (_v(tools) if params_count >= 1 else _v())
+                    if _fn_res is not None:
+                        set_output(_fn_res)
+                        return _fn_res
+                except Exception: pass
+        for _v_key in ('resultado', 'result', 'output', 'data', 'dados', 'extracted_data', 'final_result', 'dados_extraidos', 'contratos', 'margem', 'res'):
+            if _v_key in _locs and _locs[_v_key] is not None:
+                set_output(_locs[_v_key])
+                return _locs[_v_key]
+"""
+                local_ns = {}
+                exec(wrapper, global_context, local_ns)
+                runner_func = local_ns.get("__snippet_runner")
+                exec_res = await runner_func(tools_instance, page, context, browser, p_obj, p_obj, asyncio, set_output, login_user, login_pass, tools_instance.get_params())
+        finally:
+            sys.stdout = original_stdout
+
+        raw_logs = stdout_buffer.getvalue()
+        if raw_logs.strip():
+            for line in raw_logs.strip().splitlines():
+                if "[JSON_RESULT]" in line:
+                    try:
+                        extracted = json.loads(line.replace("[JSON_RESULT]", "").strip())
+                        set_output(extracted)
+                    except Exception: pass
+
+        return {"result": exec_res or "Executado com sucesso", "data": captured_output, "logs": raw_logs}
+
+    async def execute_browser_action(page, context, browser, p_obj, action: str, params: Optional[Dict[str, Any]] = None, record_frame_fn=None, set_output_fn=None, register_download_fn=None) -> Dict[str, Any]:
+        params = params or {}
+        act = (action or "").strip().lower()
+        tools = BrowserTools(page=page, context=context, browser=browser, playwright=p_obj, login_user=str(params.get("login_user", "")), login_pass=str(params.get("login_pass", "")), params=params.get("params"), set_output_fn=set_output_fn, register_download_fn=register_download_fn)
+        if act == "goto":
+            url = params.get("url") or params.get("target_url")
+            res_url = await tools.goto(url)
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "url": res_url, "title": await page.title() if page else ""}
+        elif act == "click":
+            await tools.click(params.get("selector"), force=params.get("force", False), button=params.get("button", "left"), click_count=params.get("click_count", 1))
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "clicked"}
+        elif act in ("type", "fill"):
+            if act == "type": await tools.type(params.get("selector"), params.get("text") or params.get("value") or "", delay=params.get("delay", 35))
+            else: await tools.fill(params.get("selector"), params.get("text") or params.get("value") or "")
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "filled"}
+        elif act == "solve_captcha":
+            txt = await tools.solve_captcha(params.get("selector"))
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "captcha_text": txt}
+        elif act in ("press", "press_key"):
+            await tools.press(params.get("key", "Enter"), selector=params.get("selector"))
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "key_pressed"}
+        elif act == "wait_for":
+            await tools.wait(params.get("selector"), state=params.get("state", "visible"), timeout=params.get("timeout", 15000))
+            return {"status": "success", "action": "found"}
+        elif act == "extract_table":
+            dt = await tools.extract_table(params.get("selector", "table"))
+            return {"status": "success", "data": dt}
+        elif act == "run_code":
+            code = params.get("code") or params.get("script") or ""
+            return await execute_code_sandbox(page=page, context=context, browser=browser, p_obj=p_obj, code_str=code, login_user=params.get("login_user", ""), login_pass=params.get("login_pass", ""), extra_context={"params": params.get("params")}, register_download_fn=register_download_fn)
+        elif act == "inspect_dom":
+            return {"status": "success", "dom": await inspect_dom(page)}
+        return {"status": "error", "error": f"Ação desconhecida: {act}"}
+
+    async def init_browser_engine(p_obj, engine: Optional[str] = None, headless: bool = True, proxy_config: Optional[Dict[str, str]] = None, user_agent: Optional[str] = None, viewport: Optional[Dict[str, int]] = None) -> Tuple[Any, Any, Any]:
+        ws_url = os.environ.get("PLAYWRIGHT_SERVER_WS_URL")
+        browser = None
+        if ws_url and headless:
+            try: browser = await p_obj.chromium.connect(ws_url, timeout=30000)
+            except Exception: pass
+        if not browser:
+            stealth_args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-infobars", "--window-size=1280,800", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-dev-shm-usage", "--disable-gpu"]
+            launch_kwargs = {"headless": headless, "args": stealth_args}
+            if proxy_config: launch_kwargs["proxy"] = proxy_config
+            browser = await p_obj.chromium.launch(**launch_kwargs)
+
+        ua = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        context_kwargs = {"user_agent": ua, "viewport": viewport or {"width": 1280, "height": 800}, "locale": "pt-BR", "timezone_id": "America/Sao_Paulo", "accept_downloads": True}
+        if proxy_config: context_kwargs["proxy"] = proxy_config
+        context = await browser.new_context(**context_kwargs)
+        stealth_js = "(() => { try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] }); window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} }; } catch (e) {} })();"
+        await context.add_init_script(stealth_js)
+        page = await context.new_page()
+        return browser, context, page
 
 logger = logging.getLogger("Browser.Engine")
 
