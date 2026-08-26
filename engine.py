@@ -17,8 +17,17 @@ import asyncio
 import time
 import re
 import random
+import unicodedata
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List, Tuple, Union
+
+# Importações dos submódulos especializados
+from libs.browser.dom_inspector import inspect_dom
+from libs.browser.captcha import CaptchaSolver, solve_captcha_image
+from libs.browser.sandbox import execute_code_sandbox, TeeStream
+from libs.browser.action_dispatcher import execute_browser_action
+from libs.browser.launcher import init_browser_engine
 
 logger = logging.getLogger("Browser.Engine")
 
@@ -28,138 +37,7 @@ if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == "0":
 
 
 # =============================================================================
-# 1. INSPEÇÃO PROFUNDA DE DOM & IFRAMES
-# =============================================================================
-
-async def inspect_dom(page) -> str:
-    """
-    Inspeciona o DOM da página ativa e de todos os iframes de forma profunda e recursiva.
-    Gera seletores CSS prioritários (:has-text, IDs, names, aria-labels) e XPath correspondente.
-    """
-    if not page:
-        return "Nenhuma página ativa para inspeção."
-
-    js_code = """
-    () => {
-        const elements = [];
-        const query = 'input, button, a, select, textarea, label, img, [role], [onclick], [ng-click], [\\\\@click], [v-on\\\\:click]';
-        
-        function scanDocument(doc, frameName = '') {
-            try {
-                const nodes = doc.querySelectorAll(query);
-                nodes.forEach((el) => {
-                    const tag = el.tagName.toLowerCase();
-                    const style = window.getComputedStyle(el);
-                    
-                    if (style && style.display === 'none' && !['input', 'select', 'textarea'].includes(tag)) {
-                        return;
-                    }
-                    
-                    let selector = '';
-                    let xpath = '';
-                    const id = el.id ? el.id.trim() : null;
-                    const name = el.getAttribute('name') ? el.getAttribute('name').trim() : null;
-                    const type = el.getAttribute('type') ? el.getAttribute('type').trim() : null;
-                    const placeholder = el.getAttribute('placeholder') ? el.getAttribute('placeholder').trim() : null;
-                    const text = (el.textContent || el.value || '').trim().substring(0, 60).replace(/\\s+/g, ' ');
-                    const ariaLabel = el.getAttribute('aria-label') || el.getAttribute('title') || null;
-
-                    if (id) {
-                        selector = `#${id}`;
-                        xpath = `//${tag}[@id="${id}"]`;
-                    } else if (name) {
-                        selector = `${tag}[name="${name}"]`;
-                        xpath = `//${tag}[@name="${name}"]`;
-                    } else if (type && tag === 'input') {
-                        selector = `input[type="${type}"]`;
-                        xpath = `//input[@type="${type}"]`;
-                    } else if (placeholder) {
-                        selector = `${tag}[placeholder="${placeholder}"]`;
-                        xpath = `//${tag}[@placeholder="${placeholder}"]`;
-                    } else if (ariaLabel) {
-                        selector = `${tag}[aria-label="${ariaLabel}"]`;
-                        xpath = `//${tag}[@aria-label="${ariaLabel}"]`;
-                    } else if (text && text.length > 0 && text.length < 40) {
-                        const cleanText = text.replace(/"/g, '\\"');
-                        selector = `${tag}:has-text("${cleanText}")`;
-                        xpath = `//${tag}[contains(text(), "${cleanText}")]`;
-                    } else {
-                        const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').filter(c => c).join('.')}` : '';
-                        selector = `${tag}${cls}`;
-                        xpath = `//${tag}`;
-                    }
-
-                    elements.push({
-                        frame: frameName,
-                        tag: tag.toUpperCase(),
-                        id: id,
-                        name: name,
-                        type: type,
-                        placeholder: placeholder,
-                        text: text,
-                        ariaLabel: ariaLabel,
-                        selector: selector,
-                        xpath: xpath
-                    });
-                });
-            } catch (err) {
-                console.warn('Erro ao escanear documento:', err);
-            }
-        }
-
-        scanDocument(document, 'main');
-        return elements.slice(0, 80);
-    }
-    """
-    try:
-        title = await page.title()
-        url = page.url
-        output = [f"PÁGINA ATUAL: {url}", f"TÍTULO: {title}"]
-
-        frames = getattr(page, "frames", [])
-        if len(frames) > 1:
-            output.append(f"IFRAMES DETECTADOS NA PÁGINA: {len(frames) - 1}")
-
-        all_elements = []
-        for i, frame in enumerate(frames):
-            frame_name = "main" if i == 0 else f"frame_{i} ({getattr(frame, 'url', '')})"
-            try:
-                frame_elems = await frame.evaluate(js_code)
-                for el in frame_elems:
-                    el['frame_idx'] = i
-                    el['frame_name'] = frame_name
-                    all_elements.append(el)
-            except Exception:
-                pass
-
-        if all_elements:
-            output.append("\nELEMENTOS INTERATIVOS ENCONTRADOS:")
-            for el in all_elements[:80]:
-                desc = f"- [{el['tag']}] "
-                if el.get('id'): desc += f"id='{el['id']}' "
-                if el.get('name'): desc += f"name='{el['name']}' "
-                if el.get('type'): desc += f"type='{el['type']}' "
-                if el.get('placeholder'): desc += f"placeholder='{el['placeholder']}' "
-                if el.get('text'): desc += f"texto='{el['text']}' "
-                if el.get('frame_idx', 0) > 0: desc += f"(em {el['frame_name']}) "
-                desc += f"=> Seletor CSS: `{el['selector']}` | XPath: `{el['xpath']}`"
-                output.append(desc)
-        else:
-            output.append("\n⚠️ Nenhum elemento interativo padrão foi encontrado via query selector.")
-            try:
-                body_text = await page.evaluate("() => document.body ? document.body.innerText.substring(0, 1000) : ''")
-                if body_text:
-                    output.append(f"\nCONTEÚDO TEXTUAL VISÍVEL DA PÁGINA:\n{body_text}")
-            except Exception:
-                pass
-
-        return "\n".join(output)
-    except Exception as e:
-        return f"Erro ao inspecionar elementos: {e}"
-
-
-# =============================================================================
-# 2. SDK DE ALTO NÍVEL DE AUTOMAÇÃO (BROWSER TOOLS)
+# SDK DE ALTO NÍVEL DE AUTOMAÇÃO (BROWSER TOOLS)
 # =============================================================================
 
 class BrowserTools:
@@ -198,7 +76,6 @@ class BrowserTools:
         if params:
             if isinstance(params, dict):
                 self._params = dict(params)
-                # Se vier aninhado em test_input_mock ou params
                 if "test_input_mock" in self._params and isinstance(self._params["test_input_mock"], dict):
                     self._params.update(self._params["test_input_mock"])
                 if "params" in self._params and isinstance(self._params["params"], dict):
@@ -222,6 +99,165 @@ class BrowserTools:
             self._params["login_pass"] = self._login_pass
 
     # -------------------------------------------------------------------------
+    # Gerenciador de Contexto Assíncrono Oficial (Sessão Completa do Navegador)
+    # -------------------------------------------------------------------------
+    @classmethod
+    @asynccontextmanager
+    async def session(
+        cls,
+        headless: Optional[bool] = None,
+        default_mock: Optional[Any] = None,
+        login_user: str = "",
+        login_pass: str = "",
+        proxy_config: Optional[Dict[str, str]] = None
+    ):
+        """
+        Gerenciador de contexto assíncrono para inicialização, execução e encerramento
+        automático do ciclo de vida do navegador Playwright com anti-bot stealth e proxy.
+        
+        Uso:
+            async with BrowserTools.session(headless=True, default_mock={"cpf": "123"}) as tools:
+                await tools.goto("https://exemplo.com")
+                ...
+        """
+        from playwright.async_api import async_playwright
+        
+        env_headless = os.getenv("HEADLESS")
+        if headless is None:
+            headless = env_headless.lower() in ("true", "1") if env_headless is not None else True
+        
+        ws_url = os.environ.get("PLAYWRIGHT_SERVER_WS_URL")
+        if not proxy_config:
+            proxy_server = os.environ.get("PROXY_SERVER")
+            if proxy_server and proxy_server.strip():
+                proxy_config = {"server": proxy_server.strip()}
+                p_user = os.environ.get("PROXY_USERNAME")
+                p_pass = os.environ.get("PROXY_PASSWORD")
+                if p_user and p_pass:
+                    proxy_config["username"] = p_user.strip()
+                    proxy_config["password"] = p_pass.strip()
+
+        async with async_playwright() as p:
+            launch_kwargs = {
+                "headless": headless,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--window-size=1280,800",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-extensions"
+                ]
+            }
+            if proxy_config:
+                launch_kwargs["proxy"] = proxy_config
+
+            browser = None
+            if ws_url and headless:
+                try:
+                    browser = await p.chromium.connect(ws_url)
+                except Exception:
+                    pass
+            if not browser:
+                browser = await p.chromium.launch(**launch_kwargs)
+
+            context_kwargs = {
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "viewport": {"width": 1280, "height": 800},
+                "locale": "pt-BR",
+                "timezone_id": "America/Sao_Paulo",
+                "accept_downloads": True
+            }
+            if proxy_config:
+                context_kwargs["proxy"] = proxy_config
+            
+            context = await browser.new_context(**context_kwargs)
+            
+            stealth_js = """
+            (() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+                window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+            })();
+            """
+            await context.add_init_script(stealth_js)
+            page = await context.new_page()
+
+            raw_params = os.environ.get("EXECUTION_PARAMS", "").strip()
+            params = {}
+            if raw_params:
+                try:
+                    params = json.loads(raw_params)
+                except Exception:
+                    params = {"input": raw_params}
+            elif default_mock:
+                params = dict(default_mock) if isinstance(default_mock, dict) else {"input": default_mock}
+
+            eff_user = (
+                params.get("email") or
+                params.get("user") or
+                params.get("login_user") or
+                params.get("cpf") or
+                os.environ.get("LOGIN_USER", "") or
+                login_user
+            )
+            eff_pass = (
+                params.get("password") or
+                params.get("pwd") or
+                params.get("senha") or
+                params.get("login_pass") or
+                os.environ.get("LOGIN_PASS", "") or
+                login_pass
+            )
+
+            output_holder = {"data": None}
+            def set_output(data):
+                if data is None:
+                    return
+                if isinstance(output_holder["data"], dict) and isinstance(data, dict):
+                    output_holder["data"].update(data)
+                else:
+                    output_holder["data"] = data
+                try:
+                    print(f"[JSON_RESULT] {json.dumps(output_holder['data'], ensure_ascii=False)}")
+                except Exception:
+                    print(f"[JSON_RESULT] {output_holder['data']}")
+
+            tools = cls(
+                page=page,
+                context=context,
+                browser=browser,
+                playwright=p,
+                login_user=eff_user,
+                login_pass=eff_pass,
+                params=params,
+                set_output_fn=set_output
+            )
+            tools._output_holder = output_holder
+
+            try:
+                yield tools
+            finally:
+                final_res = output_holder.get("data") if isinstance(output_holder, dict) else getattr(tools, "_captured_output", None)
+                if final_res is not None:
+                    print("\n=== RESULTADO CONSOLIDADO DA EXTRAÇÃO ===")
+                    try:
+                        print("[JSON_RESULT] " + json.dumps(final_res, ensure_ascii=False))
+                    except Exception:
+                        print(f"[JSON_RESULT] {final_res}")
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+
+    # -------------------------------------------------------------------------
     # Getters / Setters de Sessão e Propriedades
     # -------------------------------------------------------------------------
     @property
@@ -235,6 +271,14 @@ class BrowserTools:
     @property
     def browser(self):
         return self._browser
+
+    @property
+    def login_user(self) -> str:
+        return self._login_user
+
+    @property
+    def login_pass(self) -> str:
+        return self._login_pass
 
     def set_page(self, page):
         self._page = page
@@ -382,124 +426,479 @@ class BrowserTools:
         return self._downloaded_files[-1] if self._downloaded_files else None
 
     # -------------------------------------------------------------------------
-    # Ações de Navegação e Espera
+    # Ações de Navegação e Espera Reativa
     # -------------------------------------------------------------------------
-    async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 60000) -> str:
-        """Navega até uma URL aguardando o carregamento do DOM."""
+    async def goto(
+        self,
+        url: str,
+        wait_for: Optional[str] = None,
+        wait_until: str = "domcontentloaded",
+        timeout: int = 30000,
+        retries: int = 3
+    ) -> str:
+        """
+        Navega até uma URL e opcionalmente aguarda um seletor específico ser carregado na tela.
+        
+        Args:
+            url: URL de destino.
+            wait_for: Seletor opcional para aguardar após a navegação (ex: '#txtCPF', 'table').
+            wait_until: 'domcontentloaded' (padrão, rápido), 'load', 'networkidle'.
+            timeout: Tempo limite de navegação em MILISSEGUNDOS (ms) (padrão: 30000ms = 30s).
+            retries: Quantidade de retentativas se a navegação falhar (padrão: 3x).
+        """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+                if wait_for:
+                    await self.wait(wait_for, state="visible", timeout=5000, retries=retries)
+                return self._page.url
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.5)
+        raise RuntimeError(f"Falha ao navegar para '{url}' após {retries} tentativas: {last_err}")
+
+    async def wait(
+        self,
+        selector: str,
+        state: str = "visible",
+        timeout: int = 5000,
+        retries: int = 3
+    ) -> None:
+        """
+        Aguarda um elemento atingir o estado desejado ('visible', 'attached', 'hidden').
+        
+        Args:
+            selector: Seletor CSS, XPath ou Playwright (ex: '#btn', 'button:has-text("Acessar")').
+            state: 'visible' (padrão), 'attached', 'detached', 'hidden'.
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de retentativas se ocorrer timeout (padrão: 3x).
+        """
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self._page.wait_for_selector(selector, state=state, timeout=timeout)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.25)
+        raise TimeoutError(f"Elemento '{selector}' não atingiu o estado '{state}' após {retries} tentativas (timeout={timeout}ms cada): {last_err}")
+
+    async def sleep(self, seconds_or_ms: Union[int, float]) -> None:
+        """
+        Pausa assíncrona da execução.
+        Se o valor for >= 100, é interpretado em MILISSEGUNDOS (ms) (ex: 1000 = 1s).
+        Se for < 100, é interpretado em SEGUNDOS (s) (ex: 1 = 1s, 0.5 = 500ms).
+        """
+        val = float(seconds_or_ms)
+        secs = (val / 1000.0) if val >= 100 else val
+        await asyncio.sleep(secs)
+
+    async def back(self) -> str:
+        """Retorna à página anterior no histórico de navegação."""
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        await self._page.go_back(wait_until="domcontentloaded", timeout=30000)
         return self._page.url
 
-    async def wait(self, selector: str, state: str = "visible", timeout: int = 15000) -> None:
-        """Aguarda um elemento atingir o estado desejado ('visible', 'attached', 'hidden')."""
+    async def reload(self) -> str:
+        """Recarrega a página ativa."""
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.wait_for_selector(selector, state=state, timeout=timeout)
-
-    async def sleep(self, seconds: float) -> None:
-        """Pausa assíncrona segura."""
-        await asyncio.sleep(seconds)
+        await self._page.reload(wait_until="domcontentloaded", timeout=30000)
+        return self._page.url
 
     # -------------------------------------------------------------------------
-    # Ações de Interação com Elementos & Formulários SPAs
+    # Ações de Interação e Formulários (com Espera Reativa e Verificação)
     # -------------------------------------------------------------------------
     async def click(
         self,
         selector: str,
+        wait_for: Optional[str] = None,
         force: bool = False,
         button: str = "left",
         click_count: int = 1,
-        timeout: int = 15000
+        timeout: int = 5000,
+        retries: int = 3
     ) -> None:
         """
-        Executa clique inteligente e resiliente em um seletor.
-        Tenta clique direto, depois clique forçado e, em último caso, disparo via JavaScript.
+        Clica em um elemento com espera reativa, retries automáticos (3x) e múltiplos fallbacks resilientes.
+        
+        Args:
+            selector: Seletor CSS, XPath ou Playwright (ex: '#btnLogin', 'button:has-text("Entrar")').
+            wait_for: Seletor opcional para aguardar após o clique (ex: '#dashboard', 'table').
+            force: Força o clique mesmo se o elemento estiver sobreposto ou bloqueado.
+            button: 'left', 'right', 'middle'.
+            click_count: 1 (clique simples), 2 (duplo clique).
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de tentativas se o elemento falhar no clique (padrão: 3x).
         """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        try:
-            await self._page.click(selector, force=force, button=button, click_count=click_count, timeout=timeout)
-        except Exception:
+        last_err = None
+
+        for attempt in range(retries):
             try:
-                await self._page.click(selector, force=True, button=button, click_count=click_count, timeout=5000)
-            except Exception:
-                await self._page.evaluate("(sel) => document.querySelector(sel)?.click()", selector)
+                # 1. Aguarda visibilidade do elemento
+                try:
+                    await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                except Exception:
+                    pass
 
-    async def fill(self, selector: str, text: Any, timeout: int = 15000) -> None:
+                # 2. Tenta clique nativo Playwright
+                try:
+                    await self._page.click(selector, force=force, button=button, click_count=click_count, timeout=timeout)
+                except Exception:
+                    # 3. Fallback via Locator direto
+                    loc = self._page.locator(selector).first
+                    try:
+                        await loc.click(force=True, button=button, click_count=click_count, timeout=timeout)
+                    except Exception:
+                        # 4. Fallback via evento DOM
+                        try:
+                            await loc.dispatch_event("click")
+                        except Exception:
+                            # 5. Fallback via JavaScript no locator
+                            try:
+                                await loc.evaluate("el => el.click()")
+                            except Exception:
+                                pass
+
+                # Se solicitado wait_for, aguarda o elemento alvo pós-clique
+                if wait_for:
+                    await self.wait(wait_for, state="visible", timeout=timeout, retries=2)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.3)
+        raise RuntimeError(f"Falha ao clicar no elemento '{selector}' após {retries} tentativas: {last_err}")
+
+    async def fill(
+        self,
+        selector: str,
+        text: Any,
+        timeout: int = 5000,
+        retries: int = 3,
+        verify: bool = True
+    ) -> None:
         """
-        Preenche campos de texto disparando os eventos de reatividade para SPAs (Vue/React/Angular).
-        Garante limpeza prévia e emissão de 'input', 'change' e 'blur'.
+        Preenche campos de formulário (<input>, <textarea>) com verificação obrigatória de valor e retries.
+        Dispara eventos de reatividade ('input', 'change', 'blur') para SPAs (Vue/React/Angular/Wicket).
+        
+        Args:
+            selector: Seletor do campo (ex: '#txtCPF', 'input[name="senha"]').
+            text: Valor a ser preenchido (string, int, etc.).
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Mínimo de 3 tentativas se o elemento não carregar ou valor não for setado.
+            verify: Se True (padrão), confere obrigatoriamente se o valor do campo foi setado no DOM.
         """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        val = str(text if text is not None else "")
-        try:
-            await self._page.click(selector, force=True, timeout=3000)
-        except Exception:
-            pass
-        try:
-            await self._page.fill(selector, "", timeout=3000)
-        except Exception:
-            pass
+        target_val = str(text if text is not None else "")
+        last_err = None
 
-        await self._page.fill(selector, val, timeout=timeout)
+        for attempt in range(retries):
+            try:
+                # 1. Aguarda visibilidade do elemento
+                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                
+                # 2. Limpeza prévia
+                loc = self._page.locator(selector).first
+                try:
+                    await loc.click(force=True, timeout=2000)
+                except Exception:
+                    pass
+                try:
+                    await loc.fill("", timeout=2000)
+                except Exception:
+                    pass
 
-        # Dispara eventos de reatividade em frameworks modernos
-        await self._page.evaluate("""(sel) => {
-            const el = document.querySelector(sel);
-            if (el) {
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
-            }
-        }""", selector)
+                # 3. Preenchimento
+                await loc.fill(target_val, timeout=timeout)
 
-    async def type(self, selector: str, text: Any, delay: int = 35, timeout: int = 15000) -> None:
-        """Digita texto com delay realista simulando digitação humana."""
+                # 4. Disparo de eventos de reatividade para SPAs via Locator
+                try:
+                    await loc.dispatch_event("input")
+                    await loc.dispatch_event("change")
+                    await loc.dispatch_event("blur")
+                except Exception:
+                    pass
+
+                # 5. Verificação estrita se o valor foi realmente setado
+                if verify:
+                    actual_val = ""
+                    try:
+                        actual_val = await loc.input_value(timeout=1000)
+                    except Exception:
+                        try:
+                            actual_val = await loc.evaluate("el => el ? el.value : ''")
+                        except Exception:
+                            actual_val = ""
+
+                    digits_target = re.sub(r'\D', '', target_val)
+                    digits_actual = re.sub(r'\D', '', str(actual_val))
+                    if actual_val == target_val or (digits_target and digits_target == digits_actual):
+                        return
+                    else:
+                        # Fallback de digitação se a atribuição direta falhou
+                        try:
+                            await loc.click(force=True, timeout=1000)
+                            await self._page.keyboard.press("Control+A")
+                            await self._page.keyboard.press("Backspace")
+                            await self._page.keyboard.type(target_val, delay=25)
+                        except Exception:
+                            # Injeção direta via JS com setter de protótipo no locator (para React/Vue)
+                            try:
+                                await loc.evaluate("""(el, val) => {
+                                    if (el) {
+                                        const proto = Object.getPrototypeOf(el);
+                                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                                        if (setter) {
+                                            setter.call(el, val);
+                                        } else {
+                                            el.value = val;
+                                        }
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    }
+                                }""", target_val)
+                            except Exception:
+                                pass
+
+                        actual_val2 = await loc.input_value(timeout=1000)
+                        if actual_val2 == target_val or (digits_target and digits_target == re.sub(r'\D', '', str(actual_val2))):
+                            return
+
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.3)
+
+        raise RuntimeError(f"Falha ao preencher campo '{selector}' com o valor após {retries} tentativas: {last_err}")
+
+    async def type(
+        self,
+        selector: str,
+        text: Any,
+        delay: int = 35,
+        timeout: int = 5000,
+        retries: int = 3
+    ) -> None:
+        """
+        Digita texto caractere a caractere simulando digitação humana.
+        
+        Args:
+            selector: Seletor do campo.
+            text: Texto a ser digitado.
+            delay: Intervalo entre teclas em MILISSEGUNDOS (ms) (padrão: 35ms).
+            timeout: Tempo limite em ms (padrão: 5000ms = 5s).
+            retries: Quantidade de retentativas (padrão: 3).
+        """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        val = str(text if text is not None else "")
-        try:
-            await self._page.click(selector, force=True, timeout=3000)
-        except Exception:
-            pass
-        await self._page.type(selector, val, delay=delay, timeout=timeout)
+        target_val = str(text if text is not None else "")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                loc = self._page.locator(selector).first
+                await loc.click(force=True, timeout=timeout)
+                await loc.type(target_val, delay=delay, timeout=timeout)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.3)
+        raise RuntimeError(f"Falha ao digitar no campo '{selector}' após {retries} tentativas: {last_err}")
 
-    async def press(self, key: str = "Enter", selector: Optional[str] = None) -> None:
-        """Pressiona uma tecla do teclado (ex: 'Enter', 'Tab', 'Escape', 'ArrowDown')."""
+    async def press(self, key: str, selector: Optional[str] = None) -> None:
+        """
+        Pressiona uma tecla do teclado ('Enter', 'Tab', 'Escape', 'ArrowDown').
+        Se selector for informado, foca no elemento antes de pressionar.
+        """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
         if selector:
+            loc = self._page.locator(selector).first
+            await loc.press(key)
+        else:
+            await self._page.keyboard.press(key)
+
+    async def hover(self, selector: str, timeout: int = 5000) -> None:
+        """Passa o mouse (hover) sobre um elemento para abrir menus dropdown e tooltips."""
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+        await self._page.locator(selector).first.hover(timeout=timeout)
+
+    async def select(
+        self,
+        selector: str,
+        value: Any,
+        timeout: int = 5000,
+        retries: int = 3,
+        verify: bool = True
+    ) -> str:
+        """
+        Seleciona uma opção em um elemento <select> por value, label ou índice.
+        Implementa auto-verificação no DOM e retries automáticos.
+        
+        Args:
+            selector: Seletor do <select> (ex: '#selectOrgao').
+            value: Valor ('value'), texto ('label') ou índice ('index').
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Mínimo de 3 tentativas se a opção ainda estiver carregando via Ajax.
+            verify: Confere se a opção foi selecionada.
+        """
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        target = str(value if value is not None else "")
+        last_err = None
+
+        for attempt in range(retries):
             try:
-                await self._page.focus(selector)
-            except Exception:
-                pass
-        await self._page.keyboard.press(key)
+                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                loc = self._page.locator(selector).first
+                
+                try:
+                    await loc.select_option(value=target, timeout=timeout)
+                except Exception:
+                    try:
+                        await loc.select_option(label=target, timeout=timeout)
+                    except Exception:
+                        try:
+                            await loc.evaluate("""(select, val) => {
+                                for (let opt of select.options) {
+                                    if (opt.value === val || opt.text.trim() === val || opt.text.includes(val)) {
+                                        select.value = opt.value;
+                                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                                        select.dispatchEvent(new Event('input', { bubbles: true }));
+                                        break;
+                                    }
+                                }
+                            }""", target)
+                        except Exception:
+                            pass
 
-    async def hover(self, selector: str, timeout: int = 15000) -> None:
-        """Move o mouse sobre um elemento."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.hover(selector, timeout=timeout)
+                if verify:
+                    try:
+                        selected_val = await loc.evaluate("""select => {
+                            const opt = select.options[select.selectedIndex];
+                            return opt ? (opt.value + ' | ' + opt.text) : select.value;
+                        }""")
+                        if target in str(selected_val):
+                            return selected_val
+                    except Exception:
+                        pass
 
-    async def select(self, selector: str, value: Any, timeout: int = 15000) -> None:
-        """Seleciona uma opção em um <select> pelo valor."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.select_option(selector, str(value), timeout=timeout)
+                return target
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.3)
+
+        raise RuntimeError(f"Falha ao selecionar opção '{target}' no seletor '{selector}' após {retries} tentativas: {last_err}")
 
     # -------------------------------------------------------------------------
-    # Extração de Dados & Tabelas
+    # Extração de Dados & Tabelas com Espera Reativa
     # -------------------------------------------------------------------------
-    async def extract_table(self, selector: str = "table", timeout: int = 15000) -> List[Dict[str, Any]]:
+    async def get_value(self, selector: str, timeout: int = 5000, retries: int = 3) -> str:
+        """
+        Obtém o valor (.value ou input_value) de um campo de formulário (<input>, <textarea>, <select>).
+        Aguarda o elemento com até 3 retentativas automáticas e timeouts curtos.
+        
+        Args:
+            selector: Seletor do campo.
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de tentativas (padrão: 3).
+        """
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self._page.wait_for_selector(selector, state="attached", timeout=timeout)
+                val = await self._page.locator(selector).first.input_value(timeout=timeout)
+                return val.strip() if val is not None else ""
+            except Exception as e:
+                last_err = e
+                try:
+                    val = await self._page.locator(selector).first.evaluate("el => el ? (el.value || el.innerText || '') : null")
+                    if val is not None:
+                        return str(val).strip()
+                except Exception:
+                    pass
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.25)
+        raise RuntimeError(f"Falha ao obter valor do seletor '{selector}' após {retries} tentativas: {last_err}")
+
+    async def get_text(self, selector: str, timeout: int = 5000, retries: int = 3) -> str:
+        """
+        Obtém o texto visível de um elemento com espera reativa e até 3 retentativas.
+        
+        Args:
+            selector: Seletor do elemento.
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de tentativas (padrão: 3).
+        """
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self.wait(selector, state="visible", timeout=timeout, retries=1)
+                txt = await self._page.locator(selector).first.inner_text(timeout=timeout)
+                return txt.strip() if txt else ""
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.25)
+        raise RuntimeError(f"Falha ao obter texto de '{selector}' após {retries} tentativas: {last_err}")
+
+    async def get_attribute(self, selector: str, attribute: str, timeout: int = 5000, retries: int = 3) -> Optional[str]:
+        """
+        Obtém o valor de um atributo HTML (ex: 'href', 'src', 'value') com espera reativa e retries.
+        
+        Args:
+            selector: Seletor do elemento.
+            attribute: Nome do atributo HTML.
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de tentativas (padrão: 3).
+        """
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada.")
+        last_err = None
+        for attempt in range(retries):
+            try:
+                await self.wait(selector, state="attached", timeout=timeout, retries=1)
+                return await self._page.locator(selector).first.get_attribute(attribute, timeout=timeout)
+            except Exception as e:
+                last_err = e
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.25)
+        raise RuntimeError(f"Falha ao obter atributo '{attribute}' de '{selector}' após {retries} tentativas: {last_err}")
+
+    async def extract_table(self, selector: str = "table", timeout: int = 5000, retries: int = 3) -> List[Dict[str, Any]]:
         """
         Extrai qualquer tabela HTML convertendo-a para uma lista de dicionários Python:
-        [{coluna1: valor, coluna2: valor}, ...]
+        [{coluna1: valor, coluna2: valor}, ...] com espera reativa do elemento da tabela.
+        
+        Args:
+            selector: Seletor da tabela (padrão: 'table').
+            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
+            retries: Quantidade de tentativas para aguardar a tabela estar anexada ao DOM (padrão: 3).
         """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        await self.wait(selector, state="attached", timeout=timeout)
+        await self.wait(selector, state="attached", timeout=timeout, retries=retries)
 
         js_extract = """
         (tableSel) => {
@@ -538,139 +937,16 @@ class BrowserTools:
         data = await self._page.evaluate(js_extract, selector)
         return data or []
 
-    async def get_text(self, selector: str, timeout: int = 10000) -> str:
-        """Obtém o texto visível de um elemento."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self.wait(selector, timeout=timeout)
-        txt = await self._page.locator(selector).first.inner_text()
-        return txt.strip() if txt else ""
-
-    async def get_attribute(self, selector: str, attribute: str, timeout: int = 10000) -> Optional[str]:
-        """Obtém o valor de um atributo HTML de um elemento (ex: 'href', 'src', 'value')."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self.wait(selector, state="attached", timeout=timeout)
-        return await self._page.locator(selector).first.get_attribute(attribute)
-
     # -------------------------------------------------------------------------
-    # Resolução de Captcha & OCR
+    # Resolução de Captcha & OCR (Delegado para CaptchaSolver)
     # -------------------------------------------------------------------------
     async def solve_captcha(self, selector: str) -> str:
         """
-        Resolve automaticamente um captcha de imagem localizando o elemento,
-        executando OCR local (ddddocr), fallback com Gemini Vision direto
-        e fallback com a API oficial do CBR Agents (/api/webpilot/solve-captcha).
+        Resolve automaticamente um captcha de imagem delegando para o módulo CaptchaSolver.
         """
         if not self._page:
             raise RuntimeError("Página do navegador não inicializada.")
-        
-        # 1. Localiza o elemento na página com seletores flexíveis
-        el = await self._page.query_selector(selector)
-        if not el:
-            common_sels = [
-                selector,
-                f"img{selector}",
-                f"#{selector.lstrip('#')}",
-                "img[id*='captcha' i]",
-                "img[src*='captcha' i]",
-                "#cipCaptchaImg",
-                "#captchaImg"
-            ]
-            for s in common_sels:
-                try:
-                    el = await self._page.query_selector(s)
-                    if el:
-                        break
-                except Exception:
-                    pass
-
-        if not el:
-            raise ValueError(f"Elemento de captcha '{selector}' não encontrado no DOM.")
-
-        # Garante que o elemento está visível e renderizado
-        try:
-            await el.scroll_into_view_if_needed(timeout=3000)
-        except Exception:
-            pass
-
-        img_bytes = await el.screenshot()
-        if not img_bytes or len(img_bytes) == 0:
-            raise ValueError(f"Não foi possível capturar a imagem do captcha '{selector}'.")
-
-        captcha_text = ""
-
-        # 1. OCR local via ddddocr (se instalado na máquina)
-        try:
-            import ddddocr
-            ocr = ddddocr.DdddOcr(show_ad=False)
-            captcha_text = ocr.classification(img_bytes)
-        except Exception:
-            pass
-
-        # 2. Fallback Gemini Vision Local (se GEMINI_API_KEY existir no ambiente)
-        if not captcha_text:
-            try:
-                from google import genai
-                from google.genai import types
-                api_key = os.environ.get("GEMINI_API_KEY")
-                if api_key:
-                    client = genai.Client(api_key=api_key)
-                    resp = await client.aio.models.generate_content(
-                        model="gemini-3.5-flash",
-                        contents=[
-                            types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
-                            "Retorne APENAS os caracteres do texto do captcha nesta imagem, sem pontuações ou explicações."
-                        ]
-                    )
-                    captcha_text = resp.text.strip().replace(" ", "").replace("\n", "")
-            except Exception:
-                pass
-
-        # 3. Fallback Oficial via API Remota CBR Agents (/api/webpilot/solve-captcha)
-        if not captcha_text:
-            try:
-                import urllib.request
-                import json
-                b64_img = base64.b64encode(img_bytes).decode("utf-8")
-                
-                # Obtém server_url e token da sessão salva (~/.cbragents/session.json) ou variáveis de ambiente
-                server_url = os.environ.get("CBR_SERVER_URL") or "https://ia.creditobr.com.br"
-                token = os.environ.get("CBR_AUTH_TOKEN") or ""
-                
-                app_session_file = os.path.expanduser("~/.cbragents/session.json")
-                if os.path.exists(app_session_file):
-                    try:
-                        with open(app_session_file, "r", encoding="utf-8") as sf:
-                            sess_data = json.load(sf)
-                            if sess_data.get("server_url"):
-                                server_url = sess_data.get("server_url").rstrip("/")
-                            if sess_data.get("token"):
-                                token = sess_data.get("token")
-                    except Exception:
-                        pass
-                
-                req_url = f"{server_url}/api/webpilot/solve-captcha"
-                req_payload = json.dumps({"b64_image": b64_img, "mime_type": "image/png"}).encode("utf-8")
-                headers = {
-                    "Content-Type": "application/json",
-                    "User-Agent": "CBR-Agents-Engine/2.5"
-                }
-                if token:
-                    headers["Authorization"] = f"Bearer {token}"
-                
-                req = urllib.request.Request(req_url, data=req_payload, headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as res:
-                    if res.status == 200:
-                        resp_dict = json.loads(res.read().decode("utf-8"))
-                        captcha_text = resp_dict.get("captcha_text", "").strip()
-            except Exception as api_err:
-                logger.warning(f"Aviso na resolução remota de captcha via API: {api_err}")
-
-        if not captcha_text:
-            raise RuntimeError("Falha ao reconhecer caracteres do captcha.")
-
-        return captcha_text
+        return await CaptchaSolver.solve(self._page, selector)
 
     # -------------------------------------------------------------------------
     # Diagnóstico, Downloads e Abas
@@ -713,7 +989,7 @@ class BrowserTools:
         return await self._page.evaluate(script)
 
     async def inspect_dom(self) -> str:
-        """Inspeciona o DOM da página ativa."""
+        """Inspeciona o DOM da página ativa delegando para dom_inspector."""
         return await inspect_dom(self._page)
 
     async def list_tabs(self) -> List[Dict[str, Any]]:
@@ -755,438 +1031,16 @@ class BrowserTools:
 
 
 # =============================================================================
-# 3. SANDBOX DE EXECUÇÃO DE CÓDIGO PYTHON NO BROWSER ATIVO
+# EXPORTAÇÕES PÚBLICAS (100% RETROCOMPATIBILIDADE)
 # =============================================================================
 
-async def execute_code_sandbox(
-    page,
-    context,
-    browser,
-    p_obj,
-    code_str: str,
-    login_user: str = "",
-    login_pass: str = "",
-    extra_context: Optional[Dict[str, Any]] = None,
-    register_download_fn=None
-) -> Dict[str, Any]:
-    """
-    Executa snippets de código Python no contexto ativo da página.
-    Injeta o objeto 'tools' (BrowserTools), 'page', 'context', 'browser', 'params',
-    capturando stdout e chamadas a tools.set_output().
-    """
-    clean_code = code_str.strip()
-    captured_output = None
-
-    def set_output(data):
-        nonlocal captured_output
-        captured_output = data
-
-    stdout_buffer = io.StringIO()
-
-    class TeeStream:
-        def __init__(self, orig, buf):
-            self.orig = orig
-            self.buf = buf
-        def write(self, s):
-            try: self.orig.write(s)
-            except Exception: pass
-            self.buf.write(s)
-        def flush(self):
-            try: self.orig.flush()
-            except Exception: pass
-            self.buf.flush()
-
-    original_stdout = sys.stdout
-    sys.stdout = TeeStream(original_stdout, stdout_buffer)
-
-    exec_res = None
-    tools_instance = BrowserTools(
-        page=page,
-        context=context,
-        browser=browser,
-        playwright=p_obj,
-        login_user=login_user,
-        login_pass=login_pass,
-        params=(extra_context or {}).get("params"),
-        set_output_fn=set_output,
-        register_download_fn=register_download_fn
-    )
-
-    try:
-        global_context = {
-            "tools": tools_instance,
-            "page": page,
-            "context": context,
-            "browser": browser,
-            "playwright": p_obj,
-            "p": p_obj,
-            "asyncio": asyncio,
-            "json": json,
-            "set_output": set_output,
-            "login_user": login_user,
-            "login_pass": login_pass,
-            "params": tools_instance.get_params(),
-            "time": time,
-            "re": re,
-            "random": random,
-            "os": os,
-            "sys": sys
-        }
-        if extra_context:
-            global_context.update(extra_context)
-
-        # Se contiver 'async def main' ou 'def main', executa e chama main()
-        if "async def main" in clean_code or "def main" in clean_code:
-            script_ns = dict(global_context)
-            exec(clean_code, script_ns)
-            main_fn = script_ns.get("main")
-            if main_fn:
-                if asyncio.iscoroutinefunction(main_fn):
-                    exec_res = await main_fn()
-                else:
-                    exec_res = main_fn()
-            else:
-                exec_res = "Main executado"
-        else:
-            # Envolve o snippet em uma função assíncrona injetando tools, page, etc.
-            indented = "\n".join("        " + line for line in clean_code.split('\n'))
-            wrapper = f"""async def __snippet_runner(tools, page, context, browser, playwright, p, asyncio, set_output, login_user, login_pass, params):
-{indented}
-        _locs = locals()
-        for _k, _v in list(_locs.items()):
-            if callable(_v) and _k not in ('tools', 'page', 'context', 'browser', 'playwright', 'p', 'asyncio', 'set_output', 'login_user', 'login_pass', 'params') and not _k.startswith('__'):
-                try:
-                    import inspect
-                    sig = inspect.signature(_v)
-                    params_count = len(sig.parameters)
-                    if asyncio.iscoroutinefunction(_v):
-                        _fn_res = await (_v(tools) if params_count >= 1 else _v())
-                    else:
-                        _fn_res = _v(tools) if params_count >= 1 else _v()
-                    if _fn_res is not None:
-                        set_output(_fn_res)
-                        return _fn_res
-                except Exception:
-                    pass
-        for _v_key in ('resultado', 'result', 'output', 'data', 'dados', 'extracted_data', 'final_result', 'dados_extraidos', 'contratos', 'margem', 'res'):
-            if _v_key in _locs and _locs[_v_key] is not None:
-                set_output(_locs[_v_key])
-                return _locs[_v_key]
-"""
-            local_ns = {}
-            exec(wrapper, global_context, local_ns)
-            runner_func = local_ns.get("__snippet_runner")
-            exec_res = await runner_func(
-                tools_instance, page, context, browser, p_obj, p_obj, asyncio, set_output,
-                login_user, login_pass, tools_instance.get_params()
-            )
-    finally:
-        sys.stdout = original_stdout
-
-    captured_stdout_str = stdout_buffer.getvalue().strip()
-    structured_data = captured_output if captured_output is not None else exec_res
-
-    # Se não houver retorno explícito, tenta extrair JSON impresso via print()
-    if structured_data in (None, "Main executado", "Snippet executado") and captured_stdout_str:
-        try:
-            structured_data = json.loads(captured_stdout_str)
-        except Exception:
-            for line in captured_stdout_str.splitlines():
-                clean_l = line.strip()
-                if clean_l.startswith("[JSON_RESULT]"):
-                    try:
-                        structured_data = json.loads(clean_l.replace("[JSON_RESULT]", "").strip())
-                        break
-                    except Exception:
-                        pass
-                elif (clean_l.startswith('{') and clean_l.endswith('}')) or (clean_l.startswith('[') and clean_l.endswith(']')):
-                    try:
-                        structured_data = json.loads(clean_l)
-                        break
-                    except Exception:
-                        pass
-
-    if isinstance(structured_data, str) and (structured_data.strip().startswith('{') or structured_data.strip().startswith('[')):
-        try:
-            structured_data = json.loads(structured_data)
-        except Exception:
-            pass
-
-    return {
-        "status": "success",
-        "result": "Executado com sucesso",
-        "data": structured_data,
-        "json_result": structured_data,
-        "logs": stdout_buffer.getvalue(),
-        "downloaded_files": tools_instance.get_downloaded_files()
-    }
-
-
-# =============================================================================
-# 4. DESPACHANTE UNIFICADO DE AÇÕES BROWSER
-# =============================================================================
-
-async def execute_browser_action(
-    page,
-    context,
-    browser,
-    p_obj,
-    action: str,
-    params: Optional[Dict[str, Any]] = None,
-    record_frame_fn=None,
-    set_output_fn=None,
-    register_download_fn=None
-) -> Dict[str, Any]:
-    """
-    Despachante unificado de ações para os modos Visual e Interno delegando para BrowserTools.
-    """
-    params = params or {}
-    act = (action or "").strip().lower()
-
-    tools = BrowserTools(
-        page=page,
-        context=context,
-        browser=browser,
-        playwright=p_obj,
-        login_user=str(params.get("login_user", "")),
-        login_pass=str(params.get("login_pass", "")),
-        params=params.get("params"),
-        set_output_fn=set_output_fn,
-        register_download_fn=register_download_fn
-    )
-
-    try:
-        if act == "goto":
-            url = params.get("url") or params.get("target_url")
-            res_url = await tools.goto(url)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "url": res_url, "title": await page.title() if page else ""}
-
-        elif act == "click":
-            selector = params.get("selector")
-            force = params.get("force", False)
-            button = params.get("button", "left")
-            click_count = params.get("click_count", 1)
-            await tools.click(selector, force=force, button=button, click_count=click_count)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "clicked", "selector": selector}
-
-        elif act in ("type", "fill"):
-            selector = params.get("selector")
-            text = params.get("text") or params.get("value") or ""
-            if act == "type":
-                await tools.type(selector, text, delay=params.get("delay", 35))
-            else:
-                await tools.fill(selector, text)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "filled", "selector": selector}
-
-        elif act == "solve_captcha":
-            selector = params.get("selector")
-            captcha_text = await tools.solve_captcha(selector)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "captcha_text": captcha_text}
-
-        elif act in ("press", "press_key"):
-            key = params.get("key", "Enter")
-            selector = params.get("selector")
-            await tools.press(key, selector=selector)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "key_pressed", "key": key}
-
-        elif act == "wait_for":
-            selector = params.get("selector")
-            state = params.get("state", "visible")
-            timeout = params.get("timeout", 15000)
-            await tools.wait(selector, state=state, timeout=timeout)
-            return {"status": "success", "action": "found", "selector": selector}
-
-        elif act == "extract_table":
-            selector = params.get("selector", "table")
-            table_data = await tools.extract_table(selector)
-            return {"status": "success", "data": table_data}
-
-        elif act == "upload_file":
-            selector = params.get("selector")
-            file_path = params.get("file_path") or params.get("filename")
-            await page.set_input_files(selector, file_path, timeout=30000)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "uploaded", "file": file_path}
-
-        elif act == "download_file":
-            selector = params.get("selector")
-            res_dl = await tools.download_file(selector)
-            return {"status": "success", **res_dl}
-
-        elif act in ("inspect", "get_dom", "inspect_dom"):
-            inspect_text = await tools.inspect_dom()
-            return {"status": "success", "inspect_text": inspect_text}
-
-        elif act == "screenshot":
-            b64_str = await tools.screenshot(
-                filename=params.get("filename"),
-                selector=params.get("selector"),
-                full_page=bool(params.get("full_page", False))
-            )
-            if record_frame_fn: await record_frame_fn()
-            return {
-                "status": "success",
-                "b64_image": b64_str,
-                "data_uri": f"data:image/png;base64,{b64_str}",
-                "size_bytes": len(b64_str)
-            }
-
-        elif act == "hover":
-            selector = params.get("selector")
-            await tools.hover(selector)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "hovered", "selector": selector}
-
-        elif act == "select":
-            selector = params.get("selector")
-            value = params.get("value")
-            await tools.select(selector, value)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "selected", "selector": selector, "value": value}
-
-        elif act == "evaluate":
-            script = params.get("script") or params.get("js_code")
-            eval_res = await tools.evaluate(script)
-            return {"status": "success", "result": eval_res}
-
-        elif act == "get_html":
-            content = await page.content() if page else ""
-            return {"status": "success", "html": content}
-
-        elif act == "scroll":
-            direction = params.get("direction", "down")
-            amount = params.get("amount", 500)
-            await tools.scroll(direction=direction, amount=amount)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "scrolled", "direction": direction, "amount": amount}
-
-        elif act in ("back", "go_back"):
-            if page:
-                await page.go_back(wait_until='domcontentloaded', timeout=30000)
-            if record_frame_fn: await record_frame_fn()
-            return {"status": "success", "action": "navigated_back", "url": page.url if page else ""}
-
-        elif act in ("run_code", "execute_code", "eval_python"):
-            code_str = params.get("code", "")
-            login_user = params.get("login_user", "")
-            login_pass = params.get("login_pass", "")
-            res = await execute_code_sandbox(
-                page, context, browser, p_obj, code_str,
-                login_user=login_user,
-                login_pass=login_pass,
-                extra_context=params,
-                register_download_fn=register_download_fn
-            )
-            if record_frame_fn: await record_frame_fn()
-            return res
-
-        return {"status": "error", "error": f"Ação '{action}' não suportada pelo motor de navegação."}
-
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
-# =============================================================================
-# 5. INICIALIZADOR DE NAVEGADOR COM STEALTH ANTI-DETECTION
-# =============================================================================
-
-async def init_browser_engine(
-    p_obj,
-    engine: Optional[str] = None,
-    headless: bool = True,
-    proxy_config: Optional[Dict[str, str]] = None,
-    user_agent: Optional[str] = None,
-    viewport: Optional[Dict[str, int]] = None
-) -> Tuple[Any, Any, Any]:
-    """
-    Inicializa o navegador (Browser), Contexto com Proteção Anti-Detecção Stealth e Página ativa.
-    Suporta Camoufox, Chromium nativo e conexão remota com servidor Playwright.
-    """
-    ws_url = os.environ.get("PLAYWRIGHT_SERVER_WS_URL")
-    selected_engine = (engine or os.environ.get("BROWSER_ENGINE") or "").strip().lower()
-
-    browser = None
-
-    # 1. Tenta Camoufox se solicitado
-    if "camoufox" in selected_engine:
-        try:
-            from camoufox.async_api import AsyncCamoufox
-            camoufox_kwargs = {"headless": headless, "humanize": True}
-            if proxy_config:
-                camoufox_kwargs["proxy"] = proxy_config
-            browser = await AsyncCamoufox(**camoufox_kwargs).__aenter__()
-        except Exception:
-            pass
-
-    # 2. Conexão com microsserviço Playwright se disponível
-    if not browser and ws_url and headless:
-        try:
-            browser = await p_obj.chromium.connect(ws_url, timeout=30000)
-        except Exception:
-            pass
-
-    # 3. Chromium Local com Argumentos Stealth
-    if not browser:
-        stealth_args = [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--window-size=1280,800",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-dev-shm-usage",
-            "--disable-gpu"
-        ]
-        launch_kwargs = {
-            "headless": headless,
-            "args": stealth_args
-        }
-        if proxy_config:
-            launch_kwargs["proxy"] = proxy_config
-        browser = await p_obj.chromium.launch(**launch_kwargs)
-
-    # Criação de contexto com evasão anti-detecção
-    ua = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    vp = viewport or {"width": 1280, "height": 800}
-
-    context_kwargs = {
-        "user_agent": ua,
-        "viewport": vp,
-        "locale": "pt-BR",
-        "timezone_id": "America/Sao_Paulo",
-        "accept_downloads": True
-    }
-    if proxy_config:
-        context_kwargs["proxy"] = proxy_config
-
-    context = await browser.new_context(**context_kwargs)
-
-    # Injeta script anti-detecção
-    stealth_js = """
-    (() => {
-        try {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
-            window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-            const originalQuery = window.navigator.permissions?.query;
-            if (originalQuery) {
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
-            }
-        } catch (e) {}
-    })();
-    """
-    await context.add_init_script(stealth_js)
-    page = await context.new_page()
-    return browser, context, page
+__all__ = [
+    "BrowserTools",
+    "inspect_dom",
+    "CaptchaSolver",
+    "solve_captcha_image",
+    "execute_code_sandbox",
+    "TeeStream",
+    "execute_browser_action",
+    "init_browser_engine",
+]

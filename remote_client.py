@@ -117,9 +117,15 @@ if "libs" not in sys.modules:
 # GERENCIAMENTO DE NAVEGADORES E DEPENDÊNCIAS PLAYWRIGHT
 # =============================================================================
 
-def ensure_playwright_browsers():
+def ensure_playwright_browsers(force: bool = False):
     try:
         import subprocess
+        camoufox_cache = os.path.expanduser("~/.cache/camoufox")
+        pw_cache = os.path.expanduser("~/.cache/ms-playwright")
+        # Se os binários já existem localmente, pula a checagem online demorada
+        if not force and (os.path.exists(camoufox_cache) or os.path.exists(pw_cache)):
+            return
+
         print("🔍 Verificando navegadores e dependências (Chromium e Camoufox)...")
         try:
             from playwright._impl._driver import compute_driver_executable
