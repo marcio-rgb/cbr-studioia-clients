@@ -23,9 +23,19 @@ import urllib.request
 import hashlib
 from typing import Optional, Dict, Any, Tuple, Union
 
-# Limpa bloqueio de diretório se configurado incorretamente
-if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == "0":
-    os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+# Configuração Universal do Diretório de Cache dos Navegadores Playwright
+def get_playwright_browsers_path() -> str:
+    custom_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if custom_path and custom_path != "0":
+        return os.path.abspath(os.path.expanduser(custom_path))
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return os.path.join(local_appdata, "ms-playwright")
+        return os.path.expanduser("~\\AppData\\Local\\ms-playwright")
+    return os.path.expanduser("~/.cache/ms-playwright")
+
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = get_playwright_browsers_path()
 
 # Adiciona os caminhos de busca ao sys.path (~/.cbragents, diretório atual e raiz do projeto)
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -117,36 +127,149 @@ if "libs" not in sys.modules:
 # GERENCIAMENTO DE NAVEGADORES E DEPENDÊNCIAS PLAYWRIGHT
 # =============================================================================
 
-def ensure_playwright_browsers(force: bool = False):
+def is_chromium_installed() -> bool:
+    """Verifica se os binários do Chromium estão instalados no diretório do Playwright."""
+    from pathlib import Path
+    bw_path = Path(get_playwright_browsers_path())
+    if not bw_path.exists():
+        return False
+    for cdir in bw_path.glob("chromium-*"):
+        if sys.platform == "win32":
+            if any(cdir.glob("**/chrome.exe")):
+                return True
+        else:
+            for f in cdir.glob("**/chrome"):
+                if f.is_file() and os.access(f, os.X_OK):
+                    return True
+    return False
+
+
+def is_camoufox_installed() -> bool:
+    """Verifica se os binários do Camoufox estão instalados localmente."""
     try:
-        import subprocess
-        camoufox_cache = os.path.expanduser("~/.cache/camoufox")
-        pw_cache = os.path.expanduser("~/.cache/ms-playwright")
-        # Se os binários já existem localmente, pula a checagem online demorada
-        if not force and (os.path.exists(camoufox_cache) or os.path.exists(pw_cache)):
-            return
+        import camoufox.pkgman as pm
+        lp = pm.launch_path()
+        if lp and os.path.exists(str(lp)):
+            return True
+        ver = pm.installed_verstr()
+        return ver is not None
+    except Exception:
+        return False
 
-        print("🔍 Verificando navegadores e dependências (Chromium e Camoufox)...")
-        try:
-            from playwright._impl._driver import compute_driver_executable
-            driver_executable, driver_env = compute_driver_executable()
-            subprocess.run([str(driver_executable), "install", "chromium"], env=driver_env, check=False)
-        except Exception:
-            try:
-                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
-            except Exception:
-                pass
 
-        try:
-            from camoufox.pkg import download_official_browser
-            download_official_browser()
-        except Exception:
-            try:
-                subprocess.run([sys.executable, "-m", "camoufox", "fetch"], check=False)
-            except Exception:
-                pass
+def install_chromium(log_fn=print) -> bool:
+    """Instala o navegador Chromium para Playwright com suporte multiplataforma e PyInstaller."""
+    log_fn("[📥] Baixando e instalando navegador Chromium para Playwright...")
+    import subprocess
+    env = os.environ.copy()
+    pw_path = get_playwright_browsers_path()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    os.makedirs(pw_path, exist_ok=True)
+
+    # 1. Driver Node nativo do Playwright
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        node_path, cli_js = compute_driver_executable()
+        cmd = [str(node_path), str(cli_js), "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via driver Playwright!")
+            return True
     except Exception as e:
-        print(f"⚠️ Aviso ao verificar navegadores: {e}")
+        log_fn(f"[!] Driver interno Playwright indisponível: {e}")
+
+    # 2. Executável python -m playwright
+    try:
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via python -m playwright!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Subprocesso python -m playwright indisponível: {e}")
+
+    # 3. Binário global playwright no PATH
+    try:
+        cmd = ["playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via CLI global!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] CLI global playwright indisponível: {e}")
+
+    return is_chromium_installed()
+
+
+def install_camoufox(log_fn=print) -> bool:
+    """Instala o navegador Camoufox (Firefox Anti-Detect)."""
+    log_fn("[📥] Baixando e instalando navegador Camoufox (Firefox Anti-Detect)...")
+    import subprocess
+    env = os.environ.copy()
+
+    # 1. API Python CamoufoxFetcher
+    try:
+        import camoufox.pkgman as pm
+        fetcher = pm.CamoufoxFetcher()
+        fetcher.fetch()
+        if is_camoufox_installed():
+            log_fn("[✔] Camoufox instalado com sucesso via CamoufoxFetcher!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] CamoufoxFetcher falhou ({e}), tentando método alternativo...")
+
+    # 2. Executável python -m camoufox fetch
+    try:
+        cmd = [sys.executable, "-m", "camoufox", "fetch"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Camoufox] {line.strip()}")
+        if proc.returncode == 0 and is_camoufox_installed():
+            log_fn("[✔] Camoufox instalado com sucesso via subprocesso!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Subprocesso camoufox fetch falhou: {e}")
+
+    return is_camoufox_installed()
+
+
+def ensure_playwright_browsers(engine: str = "all", force: bool = False):
+    """
+    Garante que os navegadores necessários (Chromium e/ou Camoufox) estejam instalados.
+    """
+    pw_path = get_playwright_browsers_path()
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    os.makedirs(pw_path, exist_ok=True)
+
+    eng = (engine or "all").strip().lower()
+
+    if eng in ["all", "playwright", "chromium"]:
+        if force or not is_chromium_installed():
+            print("[🔍] Verificando/Instalando navegador Chromium para Playwright...")
+            install_chromium(log_fn=print)
+        else:
+            print("[✔] Navegador Chromium já está pronto.")
+
+    if eng in ["all", "camoufox", "firefox"]:
+        if force or not is_camoufox_installed():
+            print("[🔍] Verificando/Instalando navegador Camoufox (Firefox Anti-Detect)...")
+            install_camoufox(log_fn=print)
+        else:
+            print("[✔] Navegador Camoufox já está pronto.")
 
 
 # =============================================================================
@@ -204,8 +327,22 @@ async def run_client(urls: list, engine: str = "chromium"):
                         page = await context.new_page()
                         print("✅ Camoufox inicializado com sucesso!")
                     except Exception as camou_err:
-                        print(f"⚠️ Não foi possível iniciar o Camoufox ({camou_err}). Alternando para Chromium Stealth...")
-                        browser = None
+                        err_msg = str(camou_err).lower()
+                        if "not installed" in err_msg or "fetch" in err_msg or "executable" in err_msg or "missing" in err_msg:
+                            print("⚠️ Binário do Camoufox não encontrado. Instalando automaticamente...")
+                            install_camoufox(log_fn=print)
+                            try:
+                                camou_manager = AsyncCamoufox(headless=False, humanize=True, locale="pt-BR", geoip=False)
+                                browser = await camou_manager.start()
+                                context = await browser.new_context(viewport={"width": 1280, "height": 800}, locale="pt-BR", timezone_id="America/Sao_Paulo")
+                                page = await context.new_page()
+                                print("✅ Camoufox inicializado com sucesso após auto-instalação!")
+                            except Exception as retry_camou_err:
+                                print(f"⚠️ Não foi possível iniciar o Camoufox após download ({retry_camou_err}). Alternando para Chromium Stealth...")
+                                browser = None
+                        else:
+                            print(f"⚠️ Não foi possível iniciar o Camoufox ({camou_err}). Alternando para Chromium Stealth...")
+                            browser = None
 
                 if browser is None:
                     print("🌐 Inicializando motor Chromium Stealth...")
@@ -220,13 +357,26 @@ async def run_client(urls: list, engine: str = "chromium"):
                         "--no-default-browser-check",
                         "--disable-extensions"
                     ]
-                    browser = await p.chromium.launch(
-                        headless=False,
-                        args=stealth_args
-                    )
+                    try:
+                        browser = await p.chromium.launch(
+                            headless=False,
+                            args=stealth_args
+                        )
+                    except Exception as launch_err:
+                        err_str = str(launch_err).lower()
+                        if "executable doesn't exist" in err_str or "playwright install" in err_str or "browser" in err_str:
+                            print("⚠️ Binário do Chromium não encontrado localmente. Instalando automaticamente...")
+                            install_chromium(log_fn=print)
+                            browser = await p.chromium.launch(
+                                headless=False,
+                                args=stealth_args
+                            )
+                        else:
+                            raise launch_err
+
                     context = await browser.new_context(
                         viewport={"width": 1280, "height": 800},
-                        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                         locale="pt-BR",
                         timezone_id="America/Sao_Paulo",
                         permissions=[
@@ -403,7 +553,7 @@ if __name__ == "__main__":
     try:
         if urls_to_try:
             check_and_auto_update(urls_to_try[0])
-        ensure_playwright_browsers()
+        ensure_playwright_browsers(engine=args.engine)
         asyncio.run(run_client(urls_to_try, engine=args.engine))
     except KeyboardInterrupt:
         print("\nCliente encerrado pelo usuário.")

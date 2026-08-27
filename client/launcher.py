@@ -9,8 +9,6 @@
 """
 
 import os
-os.environ["PLAYWRIGHT_HOST_PLATFORM_OVERRIDE"] = "ubuntu24.04-x64"
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 import sys
 import json
 import time
@@ -26,6 +24,20 @@ import runpy
 import base64
 import traceback
 from pathlib import Path
+
+# Configuração Universal do Diretório de Cache dos Navegadores Playwright
+def get_playwright_browsers_path() -> str:
+    custom_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if custom_path and custom_path != "0":
+        return os.path.abspath(os.path.expanduser(custom_path))
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return os.path.join(local_appdata, "ms-playwright")
+        return os.path.expanduser("~\\AppData\\Local\\ms-playwright")
+    return os.path.expanduser("~/.cache/ms-playwright")
+
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = get_playwright_browsers_path()
 
 # Dependências embutidas para o runtime do robô (PyInstaller Bundle)
 import asyncio
@@ -184,6 +196,148 @@ def build_ws_url(server_url: str) -> str:
     else:
         ws = "wss://" + url
     return f"{ws}/ws" if not ws.endswith("/ws") else ws
+
+
+def is_chromium_installed() -> bool:
+    """Verifica se os binários do Chromium estão instalados no diretório do Playwright."""
+    bw_path = Path(get_playwright_browsers_path())
+    if not bw_path.exists():
+        return False
+    for cdir in bw_path.glob("chromium-*"):
+        if sys.platform == "win32":
+            if any(cdir.glob("**/chrome.exe")):
+                return True
+        else:
+            for f in cdir.glob("**/chrome"):
+                if f.is_file() and os.access(f, os.X_OK):
+                    return True
+    return False
+
+
+def is_camoufox_installed() -> bool:
+    """Verifica se os binários do Camoufox estão instalados localmente."""
+    try:
+        import camoufox.pkgman as pm
+        lp = pm.launch_path()
+        if lp and os.path.exists(str(lp)):
+            return True
+        ver = pm.installed_verstr()
+        return ver is not None
+    except Exception:
+        return False
+
+
+def install_chromium(log_fn=print) -> bool:
+    """Instala o navegador Chromium para Playwright com suporte multiplataforma e PyInstaller."""
+    log_fn("[📥] Baixando e instalando navegador Chromium para Playwright...")
+    env = os.environ.copy()
+    pw_path = get_playwright_browsers_path()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    os.makedirs(pw_path, exist_ok=True)
+
+    # 1. Driver Node nativo do Playwright
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        node_path, cli_js = compute_driver_executable()
+        cmd = [str(node_path), str(cli_js), "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via driver Playwright!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Driver interno Playwright indisponível: {e}")
+
+    # 2. Executável python -m playwright
+    try:
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via python -m playwright!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Subprocesso python -m playwright indisponível: {e}")
+
+    # 3. Binário global playwright no PATH
+    try:
+        cmd = ["playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Playwright] {line.strip()}")
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via CLI global!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] CLI global playwright indisponível: {e}")
+
+    return is_chromium_installed()
+
+
+def install_camoufox(log_fn=print) -> bool:
+    """Instala o navegador Camoufox (Firefox Anti-Detect)."""
+    log_fn("[📥] Baixando e instalando navegador Camoufox (Firefox Anti-Detect)...")
+    env = os.environ.copy()
+
+    # 1. API Python CamoufoxFetcher
+    try:
+        import camoufox.pkgman as pm
+        fetcher = pm.CamoufoxFetcher()
+        fetcher.fetch()
+        if is_camoufox_installed():
+            log_fn("[✔] Camoufox instalado com sucesso via CamoufoxFetcher!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] CamoufoxFetcher falhou ({e}), tentando método alternativo...")
+
+    # 2. Executável python -m camoufox fetch
+    try:
+        cmd = [sys.executable, "-m", "camoufox", "fetch"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.strip():
+                    log_fn(f"  [Camoufox] {line.strip()}")
+        if proc.returncode == 0 and is_camoufox_installed():
+            log_fn("[✔] Camoufox instalado com sucesso via subprocesso!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Subprocesso camoufox fetch falhou: {e}")
+
+    return is_camoufox_installed()
+
+
+def ensure_browsers(engine: str = "all", force: bool = False, log_fn=print):
+    """
+    Garante que o navegador selecionado esteja instalado antes de iniciar o robô.
+    """
+    pw_path = get_playwright_browsers_path()
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    os.makedirs(pw_path, exist_ok=True)
+
+    eng = (engine or "all").strip().lower()
+
+    if eng in ["all", "playwright", "chromium"]:
+        if force or not is_chromium_installed():
+            log_fn("[🔍] Verificando/Instalando navegador Chromium para Playwright...")
+            install_chromium(log_fn=log_fn)
+        else:
+            log_fn("[✔] Chromium já está pronto.")
+
+    if eng in ["all", "camoufox", "firefox"]:
+        if force or not is_camoufox_installed():
+            log_fn("[🔍] Verificando/Instalando navegador Camoufox...")
+            install_camoufox(log_fn=log_fn)
+        else:
+            log_fn("[✔] Camoufox já está pronto.")
 
 
 # =============================================================================
@@ -414,6 +568,13 @@ def run_gui():
             root.after(0, lambda: set_ui_state(False))
             return
 
+        # Verificação e Auto-Instalação dos Navegadores
+        status_text.set("Verificando navegadores...")
+        try:
+            ensure_browsers(engine=engine, log_fn=append_log)
+        except Exception as bw_err:
+            append_log(f"[!] Aviso ao verificar navegadores: {bw_err}")
+
         # Inicia o robô via subprocesso isolado
         ws_url = build_ws_url(server_url)
         append_log(f"[🚀] Conectando motor {engine.upper()} ao WebSocket: {ws_url}")
@@ -539,10 +700,16 @@ def main():
             sys.exit(1)
         script_path = sync_remote_client(server_url, token)
         ws_url = build_ws_url(server_url)
+        engine_cli = session.get("browser_engine", "camoufox")
+        try:
+            ensure_browsers(engine=engine_cli, log_fn=print)
+        except Exception as bw_err:
+            print(f"[!] Aviso ao verificar navegadores: {bw_err}")
+
         if getattr(sys, 'frozen', False):
-            cmd = [sys.executable, "--run-client", str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
+            cmd = [sys.executable, "--run-client", str(script_path), "--url", ws_url, "--engine", engine_cli]
         else:
-            cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", session.get("browser_engine", "camoufox")]
+            cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", engine_cli]
         subprocess.run(cmd)
     else:
         try:

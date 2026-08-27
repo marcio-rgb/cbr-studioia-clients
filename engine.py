@@ -336,6 +336,61 @@ except ImportError:
             return {"status": "success", "dom": await inspect_dom(page)}
         return {"status": "error", "error": f"Ação desconhecida: {act}"}
 
+def get_playwright_browsers_path() -> str:
+    custom_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if custom_path and custom_path != "0":
+        return os.path.abspath(os.path.expanduser(custom_path))
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return os.path.join(local_appdata, "ms-playwright")
+        return os.path.expanduser("~\\AppData\\Local\\ms-playwright")
+    return os.path.expanduser("~/.cache/ms-playwright")
+
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = get_playwright_browsers_path()
+
+def is_chromium_installed() -> bool:
+    from pathlib import Path
+    bw_path = Path(get_playwright_browsers_path())
+    if not bw_path.exists():
+        return False
+    for cdir in bw_path.glob("chromium-*"):
+        if sys.platform == "win32":
+            if any(cdir.glob("**/chrome.exe")):
+                return True
+        else:
+            for f in cdir.glob("**/chrome"):
+                if f.is_file() and os.access(f, os.X_OK):
+                    return True
+    return False
+
+def install_chromium(log_fn=print) -> bool:
+    log_fn("[📥] Baixando e instalando navegador Chromium para Playwright...")
+    import subprocess
+    env = os.environ.copy()
+    pw_path = get_playwright_browsers_path()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    os.makedirs(pw_path, exist_ok=True)
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        node_path, cli_js = compute_driver_executable()
+        cmd = [str(node_path), str(cli_js), "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via driver Playwright!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Driver interno Playwright indisponível: {e}")
+    try:
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode == 0 and is_chromium_installed():
+            log_fn("[✔] Chromium instalado com sucesso via python -m playwright!")
+            return True
+    except Exception as e:
+        log_fn(f"[!] Subprocesso python -m playwright indisponível: {e}")
+    return is_chromium_installed()
+
     async def init_browser_engine(p_obj, engine: Optional[str] = None, headless: bool = True, proxy_config: Optional[Dict[str, str]] = None, user_agent: Optional[str] = None, viewport: Optional[Dict[str, int]] = None) -> Tuple[Any, Any, Any]:
         ws_url = os.environ.get("PLAYWRIGHT_SERVER_WS_URL")
         browser = None
@@ -346,7 +401,16 @@ except ImportError:
             stealth_args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-infobars", "--window-size=1280,800", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-dev-shm-usage", "--disable-gpu"]
             launch_kwargs = {"headless": headless, "args": stealth_args}
             if proxy_config: launch_kwargs["proxy"] = proxy_config
-            browser = await p_obj.chromium.launch(**launch_kwargs)
+            try:
+                browser = await p_obj.chromium.launch(**launch_kwargs)
+            except Exception as launch_err:
+                err_str = str(launch_err).lower()
+                if "executable doesn't exist" in err_str or "playwright install" in err_str or "browser" in err_str:
+                    logger.warning("Chromium não encontrado localmente. Instalando automaticamente...")
+                    install_chromium(log_fn=logger.info)
+                    browser = await p_obj.chromium.launch(**launch_kwargs)
+                else:
+                    raise launch_err
 
         ua = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         context_kwargs = {"user_agent": ua, "viewport": viewport or {"width": 1280, "height": 800}, "locale": "pt-BR", "timezone_id": "America/Sao_Paulo", "accept_downloads": True}
@@ -358,10 +422,6 @@ except ImportError:
         return browser, context, page
 
 logger = logging.getLogger("Browser.Engine")
-
-# Limpa bloqueio de diretório se configurado incorretamente
-if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") == "0":
-    os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
 
 
 # =============================================================================
@@ -489,7 +549,15 @@ class BrowserTools:
                 except Exception:
                     pass
             if not browser:
-                browser = await p.chromium.launch(**launch_kwargs)
+                try:
+                    browser = await p.chromium.launch(**launch_kwargs)
+                except Exception as launch_err:
+                    err_str = str(launch_err).lower()
+                    if "executable doesn't exist" in err_str or "playwright install" in err_str or "browser" in err_str:
+                        install_chromium(log_fn=print)
+                        browser = await p.chromium.launch(**launch_kwargs)
+                    else:
+                        raise launch_err
 
             context_kwargs = {
                 "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",

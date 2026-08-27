@@ -15,7 +15,9 @@ echo ""
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
-VPS_URL="${1:-ws://ia.creditobr.com.br:8384}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+
+VPS_URL="${1:-wss://ia.creditobr.com.br/ws}"
 
 # 1. Verificar e instalar python3 se necessário
 if ! command -v python3 &> /dev/null; then
@@ -49,14 +51,14 @@ source .venv/bin/activate
 
 # 3. Instalar dependências se não estiverem presentes
 if ! python3 -c "import playwright, websockets, camoufox" &> /dev/null; then
-    echo -e "${BLUE}[3/4] Instalando dependências (playwright, websockets, camoufox)...${NC}"
+    echo -e "${BLUE}[3/4] Instalando dependências (playwright, websockets, camoufox, requests)...${NC}"
     pip install --upgrade pip
-    pip install playwright websockets camoufox
+    pip install playwright websockets camoufox requests
     echo -e "${BLUE}[4/4] Baixando navegadores (Chromium e Camoufox)...${NC}"
-    playwright install chromium
+    python3 -m playwright install chromium
     python3 -m camoufox fetch || true
     if command -v sudo &> /dev/null; then
-        sudo .venv/bin/playwright install-deps chromium || true
+        sudo .venv/bin/python3 -m playwright install-deps chromium 2>/dev/null || true
     fi
 fi
 

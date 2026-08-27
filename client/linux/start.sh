@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-export PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -63,12 +63,12 @@ echo -e "${BLUE}[1/3] Verificando dependências Python no .venv...${NC}"
 echo -e "${GREEN}[✔] Dependências Python prontas!${NC}"
 
 echo -e "${BLUE}[2/3] Verificando navegadores (Chromium e Camoufox)...${NC}"
-.venv/bin/playwright install chromium || echo -e "${YELLOW}[!] Aviso ao instalar Chromium. Continuando com Camoufox...${NC}"
+.venv/bin/python3 -m playwright install chromium || echo -e "${YELLOW}[!] Aviso ao instalar Chromium. Continuando com Camoufox...${NC}"
 .venv/bin/python3 -m camoufox fetch || true
 
 if command -v sudo &> /dev/null; then
     echo -e "${YELLOW}[!] Instalando/verificando dependências nativas do Linux (sudo)...${NC}"
-    sudo .venv/bin/playwright install-deps chromium || echo -e "${YELLOW}[!] Aviso: 'install-deps' via sudo não foi executado. Continuando...${NC}"
+    sudo .venv/bin/python3 -m playwright install-deps chromium 2>/dev/null || true
 fi
 echo -e "${GREEN}[✔] Chromium e bibliotecas nativas de sistema verificadas!${NC}"
 

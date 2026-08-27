@@ -3,11 +3,15 @@ TITLE Omni Playwright Client (Windows)
 CLS
 echo ========================================================
 echo   Omni Playwright Remote Client (Windows Auto-Launcher)
-echo   Conexao de Saida: ws://ia.creditobr.com.br:8384
+echo   Conexao de Saida: wss://ia.creditobr.com.br/ws
 echo ========================================================
 echo.
 
 cd /d "%~dp0"
+
+if "%PLAYWRIGHT_BROWSERS_PATH%"=="" (
+    set "PLAYWRIGHT_BROWSERS_PATH=%LOCALAPPDATA%\ms-playwright"
+)
 
 where python >nul 2>nul
 if %errorlevel% neq 0 (
@@ -39,7 +43,7 @@ if not "%ARG1%"=="" (
 )
 
 echo [3/3] Verificando navegadores (Chromium e Camoufox)...
-playwright install chromium
+python -m playwright install chromium
 python -m camoufox fetch
 
 echo.
