@@ -98,6 +98,24 @@ class BrowserDriverProxy(IBrowserDriver):
     async def get_attribute(self, selector: str, attribute: str, timeout: int = 5000, **kwargs) -> Optional[str]:
         return await self._active().get_attribute(selector, attribute=attribute, timeout=timeout, **kwargs)
 
+    async def is_visible(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        return await self._active().is_visible(selector, timeout=timeout, **kwargs)
+
+    async def is_hidden(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        return await self._active().is_hidden(selector, timeout=timeout, **kwargs)
+
+    async def exists(self, selector: str, **kwargs) -> bool:
+        return await self._active().exists(selector, **kwargs)
+
+    async def is_checked(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        return await self._active().is_checked(selector, timeout=timeout, **kwargs)
+
+    async def is_disabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        return await self._active().is_disabled(selector, timeout=timeout, **kwargs)
+
+    async def is_enabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        return await self._active().is_enabled(selector, timeout=timeout, **kwargs)
+
     async def back(self) -> str:
         return await self._active().back()
 

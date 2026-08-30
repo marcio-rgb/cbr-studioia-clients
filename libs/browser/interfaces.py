@@ -88,6 +88,36 @@ class IBrowserDriver(ABC):
         pass
 
     @abstractmethod
+    async def is_visible(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        """Verifica se um elemento está visível no DOM."""
+        pass
+
+    @abstractmethod
+    async def is_hidden(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        """Verifica se um elemento está oculto no DOM."""
+        pass
+
+    @abstractmethod
+    async def exists(self, selector: str, **kwargs) -> bool:
+        """Verifica se um elemento existe no DOM."""
+        pass
+
+    @abstractmethod
+    async def is_checked(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        """Verifica se um checkbox ou radio está marcado no DOM."""
+        pass
+
+    @abstractmethod
+    async def is_disabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        """Verifica se um elemento está desabilitado no DOM."""
+        pass
+
+    @abstractmethod
+    async def is_enabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        """Verifica se um elemento está habilitado no DOM."""
+        pass
+
+    @abstractmethod
     async def back(self) -> str:
         """Retorna à página anterior no histórico de navegação."""
         pass

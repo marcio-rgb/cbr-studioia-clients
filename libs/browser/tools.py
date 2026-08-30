@@ -174,5 +174,106 @@ async def browser_switch_to_tab(index: int) -> str:
     return await driver.switch_tab(index)
 
 
+async def browser_download_file(selector: str, **kwargs) -> str:
+    """Clica em um elemento e aguarda a conclusão do download do arquivo."""
+    try:
+        res = await driver.download_file(selector)
+        if res.get("status") == "success":
+            return f"Sucesso: Arquivo '{res.get('filename')}' baixado com sucesso em '{res.get('filepath')}'."
+        return f"Erro ao baixar arquivo: {res.get('error', 'Falha desconhecida')}"
+    except Exception as e:
+        return f"Erro ao baixar arquivo: {e}"
+
+
+async def browser_close_current_tab() -> str:
+    """Fecha a aba ativa atual do navegador."""
+    try:
+        await ensure_browser_initialized()
+        tools = get_internal_browser_tools()
+        await tools.close_tab()
+        return "Sucesso: Aba atual fechada com sucesso."
+    except Exception as e:
+        return f"Erro ao fechar aba: {e}"
+
+
+async def browser_evaluate_js(script: str) -> str:
+    """Executa código JavaScript no contexto da página ativa."""
+    try:
+        res = await driver.evaluate(script)
+        return json.dumps(res, ensure_ascii=False) if not isinstance(res, str) else res
+    except Exception as e:
+        return f"Erro ao executar JavaScript: {e}"
+
+
+async def browser_get_html(selector: Optional[str] = None) -> str:
+    """Obtém o código HTML da página ativa ou de um elemento específico."""
+    try:
+        await ensure_browser_initialized()
+        page = get_active_page()
+        if not page:
+            return "Erro: Navegador não inicializado."
+        if selector:
+            try:
+                el = page.locator(selector).first
+                return await el.inner_html(timeout=3000)
+            except Exception:
+                try:
+                    res = await page.evaluate(f"() => {{ const el = document.querySelector({json.dumps(selector)}); return el ? el.innerHTML : null; }}")
+                    if res:
+                        return str(res)
+                except Exception:
+                    pass
+        return await page.content()
+    except Exception as e:
+        return f"Erro ao obter HTML: {e}"
+
+
+async def browser_get_source() -> str:
+    """Obtém o conteúdo textual estruturado da página ativa."""
+    return await driver.inspect_dom()
+
+
+async def browser_get_downloaded_files() -> str:
+    """Lista os arquivos baixados durante a sessão atual."""
+    try:
+        files = []
+        if os.path.exists("static/downloads"):
+            files = os.listdir("static/downloads")
+        return json.dumps(files, ensure_ascii=False)
+    except Exception as e:
+        return f"Erro ao listar downloads: {e}"
+
+
+async def browser_switch_to_frame(frame_selector: str) -> str:
+    """Alterna o foco para um iframe específico."""
+    try:
+        await ensure_browser_initialized()
+        page = get_active_page()
+        if not page:
+            return "Erro: Navegador não inicializado."
+        frame = page.frame_locator(frame_selector)
+        if frame:
+            return f"Sucesso: Foco alterado para o frame '{frame_selector}'."
+        return f"Erro: Frame '{frame_selector}' não encontrado."
+    except Exception as e:
+        return f"Erro ao alternar para frame: {e}"
+
+
+async def browser_download_current_page() -> str:
+    """Salva o conteúdo ou arquivo da página aberta diretamente no disco."""
+    try:
+        await ensure_browser_initialized()
+        page = get_active_page()
+        if not page:
+            return "Erro: Navegador não inicializado."
+        os.makedirs("static/downloads", exist_ok=True)
+        filename = f"page_download_{int(datetime.datetime.now().timestamp())}.pdf"
+        filepath = os.path.join("static/downloads", filename)
+        await page.pdf(path=filepath)
+        return f"Sucesso: Página salva como PDF em '{filepath}'."
+    except Exception as e:
+        return f"Erro ao salvar página: {e}"
+
+
 # Alias para compatibilidade
 run_code = execute_internal_code

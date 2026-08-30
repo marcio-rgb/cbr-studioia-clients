@@ -11,6 +11,44 @@ _client_lock = asyncio.Lock()
 _pending_responses: Dict[str, asyncio.Future] = {}
 _message_id_counter = 0
 
+_studio_subscribers: Dict[int, list] = {}  # source_id -> list of websockets
+_global_subscribers: list = []
+
+async def register_studio_subscriber(source_id: int, websocket: Any):
+    if source_id not in _studio_subscribers:
+        _studio_subscribers[source_id] = []
+    if websocket not in _studio_subscribers[source_id]:
+        _studio_subscribers[source_id].append(websocket)
+    logger.info(f"Studio UI inscrito para stream da fonte #{source_id}")
+
+async def unregister_studio_subscriber(source_id: int, websocket: Any):
+    if source_id in _studio_subscribers and websocket in _studio_subscribers[source_id]:
+        _studio_subscribers[source_id].remove(websocket)
+
+async def broadcast_browser_frame(source_id: Optional[int], frame_base64: str, url: str = "", step_info: Optional[dict] = None):
+    if not frame_base64:
+        return
+    payload = json.dumps({
+        "type": "browser_frame",
+        "source_id": source_id,
+        "frame": frame_base64,
+        "url": url,
+        "step_info": step_info or {}
+    })
+    targets = []
+    if source_id and source_id in _studio_subscribers:
+        targets.extend(_studio_subscribers[source_id])
+    targets.extend(_global_subscribers)
+    
+    for ws in list(targets):
+        try:
+            if hasattr(ws, "send_text"):
+                await ws.send_text(payload)
+            elif hasattr(ws, "send"):
+                await ws.send(payload)
+        except Exception:
+            pass
+
 def _get_next_id() -> str:
     global _message_id_counter
     _message_id_counter += 1
@@ -35,6 +73,13 @@ async def handle_client_connection(websocket):
                         future.set_result(data)
                 elif data.get("type") == "pong":
                     logger.debug("Received pong from client")
+                elif data.get("type") == "browser_frame":
+                    await broadcast_browser_frame(
+                        source_id=data.get("source_id"),
+                        frame_base64=data.get("frame"),
+                        url=data.get("url", ""),
+                        step_info=data.get("step_info")
+                    )
             except Exception as parse_err:
                 logger.error(f"Erro ao processar mensagem do cliente: {parse_err}")
     except websockets.exceptions.ConnectionClosed as cc:
@@ -83,6 +128,13 @@ async def handle_fastapi_websocket(websocket):
                         future.set_result(data)
                 elif data.get("type") == "pong":
                     logger.debug("Received pong from client")
+                elif data.get("type") == "browser_frame":
+                    await broadcast_browser_frame(
+                        source_id=data.get("source_id"),
+                        frame_base64=data.get("frame"),
+                        url=data.get("url", ""),
+                        step_info=data.get("step_info")
+                    )
             except Exception as parse_err:
                 logger.error(f"Erro ao processar mensagem do cliente: {parse_err}")
     except Exception as cc:
@@ -119,12 +171,16 @@ def get_active_client_address() -> Optional[str]:
         return None
     return getattr(_active_client_websocket, "remote_address", "cliente_remoto")
 
-async def ping_client_connection(timeout: float = 3.0) -> bool:
+async def ping_client_connection(timeout: float = 4.0) -> bool:
     """
     Sends a lightweight ping command (evaluate 1+1) to verify that the remote client is active and responding.
+    If the client is already executing a long-running action (_pending_responses is active),
+    we know it is connected and actively processing, so return True immediately.
     """
     if not is_client_connected():
         return False
+    if len(_pending_responses) > 0:
+        return True
     try:
         res = await execute_remote_action("evaluate", {"script": "1 + 1"}, timeout=timeout)
         return res.get("result") == 2

@@ -63,6 +63,9 @@ async def execute_code_sandbox(
     from libs.browser.engine import BrowserTools
 
     clean_code = code_str.strip()
+    if extra_context and extra_context.get("reset_output"):
+        if page and hasattr(page, "_accumulated_output"):
+            page._accumulated_output = None
     captured_output = getattr(page, "_accumulated_output", None) if page else None
 
     def set_output(data):
@@ -96,7 +99,20 @@ async def execute_code_sandbox(
     original_stdout = sys.stdout
     sys.stdout = TeeStream(original_stdout, stdout_buffer)
 
-    exec_res = None
+    # Garante que page seja uma página viva
+    if context:
+        try:
+            pages = context.pages
+            if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                for p_cand in reversed(pages):
+                    if hasattr(p_cand, "is_closed") and not p_cand.is_closed():
+                        page = p_cand
+                        break
+                if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                    page = await context.new_page()
+        except Exception as e:
+            logger.warning(f"Erro ao recuperar página ativa em execute_code_sandbox: {e}")
+
     tools_instance = BrowserTools(
         page=page,
         context=context,
@@ -179,6 +195,24 @@ async def execute_code_sandbox(
                 tools_instance, page, context, browser, p_obj, p_obj, asyncio, set_output,
                 login_user, login_pass, tools_instance.get_params()
             )
+    except Exception as e:
+        if isinstance(e, asyncio.CancelledError):
+            raise e
+        import traceback
+        err_type = type(e).__name__
+        err_msg = str(e)
+        logger.error(f"Erro na execução do código no sandbox: {err_type}: {err_msg}")
+        captured_logs = stdout_buffer.getvalue().strip()
+        error_output = f"{captured_logs}\n[ERRO] {err_type}: {err_msg}".strip() if captured_logs else f"[ERRO] {err_type}: {err_msg}"
+        return {
+            "status": "error",
+            "error": f"{err_type}: {err_msg}",
+            "message": f"{err_type}: {err_msg}",
+            "result": None,
+            "data": None,
+            "logs": error_output,
+            "downloaded_files": tools_instance.get_downloaded_files() if 'tools_instance' in locals() else []
+        }
     finally:
         sys.stdout = original_stdout
 

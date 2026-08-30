@@ -198,6 +198,36 @@ class RemoteWSBrowserDriver(IBrowserDriver):
             raise RuntimeError(f"Erro ao obter atributo '{attribute}' de '{selector}': {res.get('error')}")
         return res.get("value")
 
+    async def is_visible(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        logger.info(f"Roteando 'is_visible' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("is_visible", {"selector": selector, "timeout": timeout})
+        return bool(res.get("visible", False))
+
+    async def is_hidden(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        logger.info(f"Roteando 'is_hidden' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("is_hidden", {"selector": selector, "timeout": timeout})
+        return bool(res.get("hidden", True))
+
+    async def exists(self, selector: str, **kwargs) -> bool:
+        logger.info(f"Roteando 'exists' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("exists", {"selector": selector})
+        return bool(res.get("exists", False))
+
+    async def is_checked(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        logger.info(f"Roteando 'is_checked' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("is_checked", {"selector": selector, "timeout": timeout})
+        return bool(res.get("checked", False))
+
+    async def is_disabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        logger.info(f"Roteando 'is_disabled' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("is_disabled", {"selector": selector, "timeout": timeout})
+        return bool(res.get("disabled", False))
+
+    async def is_enabled(self, selector: str, timeout: int = 5000, **kwargs) -> bool:
+        logger.info(f"Roteando 'is_enabled' via WebSocket. Seletor: {selector}")
+        res = await execute_remote_action("is_enabled", {"selector": selector, "timeout": timeout})
+        return bool(res.get("enabled", False))
+
     async def evaluate(self, script: str) -> Any:
         logger.info("Roteando 'evaluate' via WebSocket.")
         res = await execute_remote_action("evaluate", {"script": script})

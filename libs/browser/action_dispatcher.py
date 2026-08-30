@@ -33,6 +33,20 @@ async def execute_browser_action(
     params = params or {}
     act = (action or "").strip().lower()
 
+    # Garante que temos uma página aberta e ativa
+    if context:
+        try:
+            pages = context.pages
+            if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                for p_cand in reversed(pages):
+                    if hasattr(p_cand, "is_closed") and not p_cand.is_closed():
+                        page = p_cand
+                        break
+                if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                    page = await context.new_page()
+        except Exception as e:
+            logger.warning(f"Erro ao recuperar página ativa em action_dispatcher: {e}")
+
     tools = BrowserTools(
         page=page,
         context=context,
@@ -148,6 +162,36 @@ async def execute_browser_action(
             attr = params.get("attribute") or params.get("attr")
             attr_val = await tools.get_attribute(selector, attr, timeout=params.get("timeout", 5000))
             return {"status": "success", "attribute": attr, "value": attr_val, "selector": selector}
+
+        elif act == "is_visible":
+            selector = params.get("selector")
+            vis = await tools.is_visible(selector, timeout=params.get("timeout", 5000))
+            return {"status": "success", "visible": vis, "selector": selector}
+
+        elif act == "is_hidden":
+            selector = params.get("selector")
+            hid = await tools.is_hidden(selector, timeout=params.get("timeout", 5000))
+            return {"status": "success", "hidden": hid, "selector": selector}
+
+        elif act == "exists":
+            selector = params.get("selector")
+            ex = await tools.exists(selector)
+            return {"status": "success", "exists": ex, "selector": selector}
+
+        elif act == "is_checked":
+            selector = params.get("selector")
+            chk = await tools.is_checked(selector, timeout=params.get("timeout", 5000))
+            return {"status": "success", "checked": chk, "selector": selector}
+
+        elif act == "is_disabled":
+            selector = params.get("selector")
+            dis = await tools.is_disabled(selector, timeout=params.get("timeout", 5000))
+            return {"status": "success", "disabled": dis, "selector": selector}
+
+        elif act == "is_enabled":
+            selector = params.get("selector")
+            enb = await tools.is_enabled(selector, timeout=params.get("timeout", 5000))
+            return {"status": "success", "enabled": enb, "selector": selector}
 
         elif act == "hover":
             selector = params.get("selector")

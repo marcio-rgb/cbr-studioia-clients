@@ -211,26 +211,37 @@ async def execute_internal_code(
     **kwargs
 ) -> Dict[str, Any]:
     """Executa snippet ou script Python no navegador interno ativo via engine.py."""
-    await ensure_browser_initialized()
-    page = get_active_page()
-    if not page:
-        return {"status": "error", "error": "Navegador interno não pôde ser inicializado."}
+    try:
+        await ensure_browser_initialized()
+        page = get_active_page()
+        if not page:
+            return {"status": "error", "error": "Navegador interno não pôde ser inicializado."}
 
-    context = page.context if hasattr(page, "context") else get_active_context()
-    browser = get_active_browser()
-    playwright = _session_manager._playwright_var.get() or _session_manager._global_playwright
+        context = page.context if hasattr(page, "context") else get_active_context()
+        browser = get_active_browser()
+        playwright = _session_manager._playwright_var.get() or _session_manager._global_playwright
 
-    extra_ctx = {}
-    if params:
-        extra_ctx["params"] = params
+        extra_ctx = {}
+        if params:
+            extra_ctx["params"] = params
+        if kwargs.get("reset_output"):
+            extra_ctx["reset_output"] = True
 
-    return await execute_code_sandbox(
-        page, context, browser, playwright, code,
-        login_user=login_user,
-        login_pass=login_pass,
-        extra_context=extra_ctx,
-        register_download_fn=db_register_download
-    )
+        return await execute_code_sandbox(
+            page, context, browser, playwright, code,
+            login_user=login_user,
+            login_pass=login_pass,
+            extra_context=extra_ctx,
+            register_download_fn=db_register_download
+        )
+    except Exception as e:
+        logger.error(f"Erro ao executar snippet no navegador interno: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": f"Erro na execução do snippet: {e}",
+            "logs": f"[ERRO] {type(e).__name__}: {str(e)}"
+        }
 
 
 async def execute_internal_action(
@@ -238,17 +249,25 @@ async def execute_internal_action(
     params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Executa uma ação atômica no navegador interno ativo via engine.py."""
-    await ensure_browser_initialized()
-    page = get_active_page()
-    if not page:
-        return {"status": "error", "error": "Navegador interno não inicializado."}
+    try:
+        await ensure_browser_initialized()
+        page = get_active_page()
+        if not page:
+            return {"status": "error", "error": "Navegador interno não inicializado."}
 
-    context = get_active_context()
-    browser = get_active_browser()
-    playwright = _session_manager._playwright_var.get() or _session_manager._global_playwright
+        context = get_active_context()
+        browser = get_active_browser()
+        playwright = _session_manager._playwright_var.get() or _session_manager._global_playwright
 
-    return await execute_browser_action(
-        page, context, browser, playwright, action,
-        params=params,
-        register_download_fn=db_register_download
-    )
+        return await execute_browser_action(
+            page, context, browser, playwright, action,
+            params=params,
+            register_download_fn=db_register_download
+        )
+    except Exception as e:
+        logger.error(f"Erro ao executar ação interna '{action}': {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": f"Erro ao executar ação '{action}': {e}"
+        }
