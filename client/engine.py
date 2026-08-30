@@ -203,6 +203,9 @@ except ImportError:
     async def execute_code_sandbox(page, context, browser, p_obj, code_str: str, login_user: str = "", login_pass: str = "", extra_context: Optional[Dict[str, Any]] = None, register_download_fn=None) -> Dict[str, Any]:
         import textwrap
         clean_code = code_str.strip()
+        if extra_context and extra_context.get("reset_output"):
+            if page and hasattr(page, "_accumulated_output"):
+                page._accumulated_output = None
         captured_output = getattr(page, "_accumulated_output", None) if page else None
 
         def set_output(data):
@@ -329,9 +332,35 @@ except ImportError:
         elif act == "extract_table":
             dt = await tools.extract_table(params.get("selector", "table"))
             return {"status": "success", "data": dt}
+        elif act in ("screenshot", "take_screenshot"):
+            b64 = await tools.screenshot(full_page=params.get("full_page", False))
+            return {"status": "success", "b64_image": b64, "url": getattr(page, "url", "")}
+        elif act == "evaluate":
+            script = params.get("script") or params.get("expression") or "1 + 1"
+            script_clean = script.strip()
+            if "return " in script_clean and not script_clean.startswith("() =>") and not script_clean.startswith("function"):
+                script = f"(() => {{ {script_clean} }})()"
+            res = await page.evaluate(script) if page else None
+            return {"status": "success", "result": res}
+        elif act == "get_url":
+            return {"status": "success", "url": getattr(page, "url", "")}
+        elif act == "scroll":
+            await tools.scroll(direction=params.get("direction", "down"), amount=params.get("amount", 500))
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "scrolled"}
+        elif act == "hover":
+            await tools.hover(params.get("selector"))
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "hovered"}
+        elif act == "select":
+            await tools.select(params.get("selector"), params.get("value") or "")
+            if record_frame_fn: await record_frame_fn()
+            return {"status": "success", "action": "selected"}
         elif act == "run_code":
             code = params.get("code") or params.get("script") or ""
-            return await execute_code_sandbox(page=page, context=context, browser=browser, p_obj=p_obj, code_str=code, login_user=params.get("login_user", ""), login_pass=params.get("login_pass", ""), extra_context={"params": params.get("params")}, register_download_fn=register_download_fn)
+            res = await execute_code_sandbox(page=page, context=context, browser=browser, p_obj=p_obj, code_str=code, login_user=params.get("login_user", ""), login_pass=params.get("login_pass", ""), extra_context={"params": params.get("params")}, register_download_fn=register_download_fn)
+            if record_frame_fn: await record_frame_fn()
+            return res
         elif act == "inspect_dom":
             return {"status": "success", "dom": await inspect_dom(page)}
         return {"status": "error", "error": f"Ação desconhecida: {act}"}
@@ -660,13 +689,25 @@ class BrowserTools:
     def page(self):
         return self._page
 
+    @page.setter
+    def page(self, value):
+        self._page = value
+
     @property
     def context(self):
         return self._context
 
+    @context.setter
+    def context(self, value):
+        self._context = value
+
     @property
     def browser(self):
         return self._browser
+
+    @browser.setter
+    def browser(self, value):
+        self._browser = value
 
     @property
     def login_user(self) -> str:
@@ -680,6 +721,31 @@ class BrowserTools:
         self._page = page
 
     def get_page(self):
+        return self._page
+
+    async def ensure_active_page(self):
+        """Garante que self._page seja uma página aberta e válida."""
+        if self._page is not None:
+            try:
+                if hasattr(self._page, "is_closed") and self._page.is_closed():
+                    self._page = None
+            except Exception:
+                self._page = None
+
+        if self._page is None and self._context is not None:
+            try:
+                pages = self._context.pages
+                for p in reversed(pages):
+                    if hasattr(p, "is_closed") and not p.is_closed():
+                        self._page = p
+                        break
+                if self._page is None:
+                    self._page = await self._context.new_page()
+            except Exception as e:
+                logger.warning(f"Erro ao recuperar página ativa no contexto: {e}")
+
+        if not self._page:
+            raise RuntimeError("Página do navegador não inicializada ou contexto fechado.")
         return self._page
 
     # -------------------------------------------------------------------------
@@ -842,17 +908,20 @@ class BrowserTools:
             timeout: Tempo limite de navegação em MILISSEGUNDOS (ms) (padrão: 30000ms = 30s).
             retries: Quantidade de retentativas se a navegação falhar (padrão: 3x).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
         for attempt in range(retries):
             try:
-                await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+                await page.goto(url, wait_until=wait_until, timeout=timeout)
                 if wait_for:
                     await self.wait(wait_for, state="visible", timeout=5000, retries=retries)
-                return self._page.url
+                return page.url
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.5)
         raise RuntimeError(f"Falha ao navegar para '{url}' após {retries} tentativas: {last_err}")
@@ -873,15 +942,18 @@ class BrowserTools:
             timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
             retries: Quantidade de retentativas se ocorrer timeout (padrão: 3x).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
         for attempt in range(retries):
             try:
-                await self._page.wait_for_selector(selector, state=state, timeout=timeout)
+                await page.wait_for_selector(selector, state=state, timeout=timeout)
                 return
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.25)
         raise TimeoutError(f"Elemento '{selector}' não atingiu o estado '{state}' após {retries} tentativas (timeout={timeout}ms cada): {last_err}")
@@ -898,17 +970,20 @@ class BrowserTools:
 
     async def back(self) -> str:
         """Retorna à página anterior no histórico de navegação."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.go_back(wait_until="domcontentloaded", timeout=30000)
-        return self._page.url
+        page = await self.ensure_active_page()
+        await page.go_back(wait_until="domcontentloaded", timeout=30000)
+        return page.url
 
     async def reload(self) -> str:
         """Recarrega a página ativa."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.reload(wait_until="domcontentloaded", timeout=30000)
-        return self._page.url
+        page = await self.ensure_active_page()
+        await page.reload(wait_until="domcontentloaded", timeout=30000)
+        return page.url
+
+    async def get_html(self) -> str:
+        """Retorna o conteúdo HTML completo da página ativa."""
+        page = await self.ensure_active_page()
+        return await page.content() if page else ""
 
     # -------------------------------------------------------------------------
     # Ações de Interação e Formulários (com Espera Reativa e Verificação)
@@ -935,24 +1010,23 @@ class BrowserTools:
             timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
             retries: Quantidade de tentativas se o elemento falhar no clique (padrão: 3x).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
 
         for attempt in range(retries):
             try:
                 # 1. Aguarda visibilidade do elemento
                 try:
-                    await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                    await page.wait_for_selector(selector, state="visible", timeout=timeout)
                 except Exception:
                     pass
 
                 # 2. Tenta clique nativo Playwright
                 try:
-                    await self._page.click(selector, force=force, button=button, click_count=click_count, timeout=timeout)
+                    await page.click(selector, force=force, button=button, click_count=click_count, timeout=timeout)
                 except Exception:
                     # 3. Fallback via Locator direto
-                    loc = self._page.locator(selector).first
+                    loc = page.locator(selector).first
                     try:
                         await loc.click(force=True, button=button, click_count=click_count, timeout=timeout)
                     except Exception:
@@ -972,6 +1046,10 @@ class BrowserTools:
                 return
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.3)
         raise RuntimeError(f"Falha ao clicar no elemento '{selector}' após {retries} tentativas: {last_err}")
@@ -987,26 +1065,18 @@ class BrowserTools:
         """
         Preenche campos de formulário (<input>, <textarea>) com verificação obrigatória de valor e retries.
         Dispara eventos de reatividade ('input', 'change', 'blur') para SPAs (Vue/React/Angular/Wicket).
-        
-        Args:
-            selector: Seletor do campo (ex: '#txtCPF', 'input[name="senha"]').
-            text: Valor a ser preenchido (string, int, etc.).
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Mínimo de 3 tentativas se o elemento não carregar ou valor não for setado.
-            verify: Se True (padrão), confere obrigatoriamente se o valor do campo foi setado no DOM.
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         target_val = str(text if text is not None else "")
         last_err = None
 
         for attempt in range(retries):
             try:
                 # 1. Aguarda visibilidade do elemento
-                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
+                await page.wait_for_selector(selector, state="visible", timeout=timeout)
                 
                 # 2. Limpeza prévia
-                loc = self._page.locator(selector).first
+                loc = page.locator(selector).first
                 try:
                     await loc.click(force=True, timeout=2000)
                 except Exception:
@@ -1046,9 +1116,9 @@ class BrowserTools:
                         # Fallback de digitação se a atribuição direta falhou
                         try:
                             await loc.click(force=True, timeout=1000)
-                            await self._page.keyboard.press("Control+A")
-                            await self._page.keyboard.press("Backspace")
-                            await self._page.keyboard.type(target_val, delay=25)
+                            await page.keyboard.press("Control+A")
+                            await page.keyboard.press("Backspace")
+                            await page.keyboard.type(target_val, delay=25)
                         except Exception:
                             # Injeção direta via JS com setter de protótipo no locator (para React/Vue)
                             try:
@@ -1068,13 +1138,24 @@ class BrowserTools:
                             except Exception:
                                 pass
 
-                        actual_val2 = await loc.input_value(timeout=1000)
+                        actual_val2 = ""
+                        try:
+                            actual_val2 = await loc.input_value(timeout=1000)
+                        except Exception:
+                            try:
+                                actual_val2 = await loc.evaluate("el => el ? el.value : ''")
+                            except Exception:
+                                actual_val2 = ""
                         if actual_val2 == target_val or (digits_target and digits_target == re.sub(r'\D', '', str(actual_val2))):
                             return
 
                 return
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.3)
 
@@ -1090,27 +1171,23 @@ class BrowserTools:
     ) -> None:
         """
         Digita texto caractere a caractere simulando digitação humana.
-        
-        Args:
-            selector: Seletor do campo.
-            text: Texto a ser digitado.
-            delay: Intervalo entre teclas em MILISSEGUNDOS (ms) (padrão: 35ms).
-            timeout: Tempo limite em ms (padrão: 5000ms = 5s).
-            retries: Quantidade de retentativas (padrão: 3).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         target_val = str(text if text is not None else "")
         last_err = None
         for attempt in range(retries):
             try:
-                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
-                loc = self._page.locator(selector).first
+                await page.wait_for_selector(selector, state="visible", timeout=timeout)
+                loc = page.locator(selector).first
                 await loc.click(force=True, timeout=timeout)
                 await loc.type(target_val, delay=delay, timeout=timeout)
                 return
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.3)
         raise RuntimeError(f"Falha ao digitar no campo '{selector}' após {retries} tentativas: {last_err}")
@@ -1120,20 +1197,18 @@ class BrowserTools:
         Pressiona uma tecla do teclado ('Enter', 'Tab', 'Escape', 'ArrowDown').
         Se selector for informado, foca no elemento antes de pressionar.
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         if selector:
-            loc = self._page.locator(selector).first
+            loc = page.locator(selector).first
             await loc.press(key)
         else:
-            await self._page.keyboard.press(key)
+            await page.keyboard.press(key)
 
     async def hover(self, selector: str, timeout: int = 5000) -> None:
         """Passa o mouse (hover) sobre um elemento para abrir menus dropdown e tooltips."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
-        await self._page.locator(selector).first.hover(timeout=timeout)
+        page = await self.ensure_active_page()
+        await page.wait_for_selector(selector, state="visible", timeout=timeout)
+        await page.locator(selector).first.hover(timeout=timeout)
 
     async def select(
         self,
@@ -1146,23 +1221,15 @@ class BrowserTools:
         """
         Seleciona uma opção em um elemento <select> por value, label ou índice.
         Implementa auto-verificação no DOM e retries automáticos.
-        
-        Args:
-            selector: Seletor do <select> (ex: '#selectOrgao').
-            value: Valor ('value'), texto ('label') ou índice ('index').
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Mínimo de 3 tentativas se a opção ainda estiver carregando via Ajax.
-            verify: Confere se a opção foi selecionada.
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         target = str(value if value is not None else "")
         last_err = None
 
         for attempt in range(retries):
             try:
-                await self._page.wait_for_selector(selector, state="visible", timeout=timeout)
-                loc = self._page.locator(selector).first
+                await page.wait_for_selector(selector, state="visible", timeout=timeout)
+                loc = page.locator(selector).first
                 
                 try:
                     await loc.select_option(value=target, timeout=timeout)
@@ -1198,6 +1265,10 @@ class BrowserTools:
                 return target
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.3)
 
@@ -1210,26 +1281,24 @@ class BrowserTools:
         """
         Obtém o valor (.value ou input_value) de um campo de formulário (<input>, <textarea>, <select>).
         Aguarda o elemento com até 3 retentativas automáticas e timeouts curtos.
-        
-        Args:
-            selector: Seletor do campo.
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Quantidade de tentativas (padrão: 3).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
         for attempt in range(retries):
             try:
-                await self._page.wait_for_selector(selector, state="attached", timeout=timeout)
-                val = await self._page.locator(selector).first.input_value(timeout=timeout)
+                await page.wait_for_selector(selector, state="attached", timeout=timeout)
+                val = await page.locator(selector).first.input_value(timeout=timeout)
                 return val.strip() if val is not None else ""
             except Exception as e:
                 last_err = e
                 try:
-                    val = await self._page.locator(selector).first.evaluate("el => el ? (el.value || el.innerText || '') : null")
+                    val = await page.locator(selector).first.evaluate("el => el ? (el.value || el.innerText || '') : null")
                     if val is not None:
                         return str(val).strip()
+                except Exception:
+                    pass
+                try:
+                    page = await self.ensure_active_page()
                 except Exception:
                     pass
                 if attempt < retries - 1:
@@ -1239,22 +1308,20 @@ class BrowserTools:
     async def get_text(self, selector: str, timeout: int = 5000, retries: int = 3) -> str:
         """
         Obtém o texto visível de um elemento com espera reativa e até 3 retentativas.
-        
-        Args:
-            selector: Seletor do elemento.
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Quantidade de tentativas (padrão: 3).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
         for attempt in range(retries):
             try:
                 await self.wait(selector, state="visible", timeout=timeout, retries=1)
-                txt = await self._page.locator(selector).first.inner_text(timeout=timeout)
+                txt = await page.locator(selector).first.inner_text(timeout=timeout)
                 return txt.strip() if txt else ""
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.25)
         raise RuntimeError(f"Falha ao obter texto de '{selector}' após {retries} tentativas: {last_err}")
@@ -1262,38 +1329,109 @@ class BrowserTools:
     async def get_attribute(self, selector: str, attribute: str, timeout: int = 5000, retries: int = 3) -> Optional[str]:
         """
         Obtém o valor de um atributo HTML (ex: 'href', 'src', 'value') com espera reativa e retries.
-        
-        Args:
-            selector: Seletor do elemento.
-            attribute: Nome do atributo HTML.
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Quantidade de tentativas (padrão: 3).
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         last_err = None
         for attempt in range(retries):
             try:
                 await self.wait(selector, state="attached", timeout=timeout, retries=1)
-                return await self._page.locator(selector).first.get_attribute(attribute, timeout=timeout)
+                return await page.locator(selector).first.get_attribute(attribute, timeout=timeout)
             except Exception as e:
                 last_err = e
+                try:
+                    page = await self.ensure_active_page()
+                except Exception:
+                    pass
                 if attempt < retries - 1:
                     await asyncio.sleep(0.25)
         raise RuntimeError(f"Falha ao obter atributo '{attribute}' de '{selector}' após {retries} tentativas: {last_err}")
 
+    async def is_visible(self, selector: str, timeout: int = 5000) -> bool:
+        """
+        Verifica se um elemento está visível no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return await page.locator(selector).first.is_visible(timeout=timeout)
+        except Exception:
+            return False
+
+    async def is_hidden(self, selector: str, timeout: int = 5000) -> bool:
+        """
+        Verifica se um elemento está oculto no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return await page.locator(selector).first.is_hidden(timeout=timeout)
+        except Exception:
+            return True
+
+    async def exists(self, selector: str) -> bool:
+        """
+        Verifica se um elemento existe no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return (await page.locator(selector).count()) > 0
+        except Exception:
+            return False
+
+    async def is_checked(self, selector: str, timeout: int = 5000) -> bool:
+        """
+        Verifica se um checkbox ou radio está marcado no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return await page.locator(selector).first.is_checked(timeout=timeout)
+        except Exception:
+            return False
+
+    async def is_disabled(self, selector: str, timeout: int = 5000) -> bool:
+        """
+        Verifica se um elemento está desabilitado no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return await page.locator(selector).first.is_disabled(timeout=timeout)
+        except Exception:
+            return False
+
+    async def is_enabled(self, selector: str, timeout: int = 5000) -> bool:
+        """
+        Verifica se um elemento está habilitado no DOM.
+        """
+        page = await self.ensure_active_page()
+        try:
+            return await page.locator(selector).first.is_enabled(timeout=timeout)
+        except Exception:
+            return False
+
+    async def count(self, selector: str, timeout: int = 5000, min_count: int = 1) -> int:
+        """
+        Aguarda a renderização de elementos no DOM antes de contar, evitando leituras prematuras de 0 itens em AJAX.
+        """
+        page = await self.ensure_active_page()
+        try:
+            await page.wait_for_selector(selector, state="attached", timeout=timeout)
+        except Exception:
+            pass
+        return await page.locator(selector).count()
+
+    async def wait_for_idle(self, timeout: int = 2000) -> None:
+        """
+        Aguarda brevemente a estabilização de rede/DOM após ações assíncronas.
+        """
+        page = await self.ensure_active_page()
+        try:
+            await page.wait_for_load_state("networkidle", timeout=timeout)
+        except Exception:
+            await asyncio.sleep(0.5)
+
     async def extract_table(self, selector: str = "table", timeout: int = 5000, retries: int = 3) -> List[Dict[str, Any]]:
         """
-        Extrai qualquer tabela HTML convertendo-a para uma lista de dicionários Python:
-        [{coluna1: valor, coluna2: valor}, ...] com espera reativa do elemento da tabela.
-        
-        Args:
-            selector: Seletor da tabela (padrão: 'table').
-            timeout: Tempo limite em MILISSEGUNDOS (ms) por tentativa (padrão: 5000ms = 5s).
-            retries: Quantidade de tentativas para aguardar a tabela estar anexada ao DOM (padrão: 3).
+        Extrai qualquer tabela HTML convertendo-a para uma lista de dicionários Python.
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         await self.wait(selector, state="attached", timeout=timeout, retries=retries)
 
         js_extract = """
@@ -1330,7 +1468,7 @@ class BrowserTools:
             return results;
         }
         """
-        data = await self._page.evaluate(js_extract, selector)
+        data = await page.evaluate(js_extract, selector)
         return data or []
 
     # -------------------------------------------------------------------------
@@ -1340,9 +1478,8 @@ class BrowserTools:
         """
         Resolve automaticamente um captcha de imagem delegando para o módulo CaptchaSolver.
         """
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        return await CaptchaSolver.solve(self._page, selector)
+        page = await self.ensure_active_page()
+        return await CaptchaSolver.solve(page, selector)
 
     # -------------------------------------------------------------------------
     # Diagnóstico, Downloads e Abas
@@ -1354,14 +1491,13 @@ class BrowserTools:
         full_page: bool = False
     ) -> str:
         """Captura screenshot e retorna como string Base64 e URI de imagem."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         if selector:
-            el = self._page.locator(selector).first
+            el = page.locator(selector).first
             await el.wait_for(state="visible", timeout=10000)
             screenshot_bytes = await el.screenshot()
         else:
-            screenshot_bytes = await self._page.screenshot(full_page=full_page)
+            screenshot_bytes = await page.screenshot(full_page=full_page)
 
         if filename:
             os.makedirs("static/screenshots", exist_ok=True)
@@ -1373,20 +1509,22 @@ class BrowserTools:
 
     async def scroll(self, direction: str = "down", amount: int = 500) -> None:
         """Rola a página verticalmente para cima ou para baixo."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
+        page = await self.ensure_active_page()
         delta = amount if direction.lower() == "down" else -amount
-        await self._page.evaluate(f"window.scrollBy(0, {delta})")
+        await page.evaluate(f"window.scrollBy(0, {delta})")
 
     async def evaluate(self, script: str) -> Any:
         """Executa um snippet JavaScript no contexto da página."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        return await self._page.evaluate(script)
+        page = await self.ensure_active_page()
+        script_clean = (script or "").strip()
+        if "return " in script_clean and not script_clean.startswith("() =>") and not script_clean.startswith("function"):
+            script = f"(() => {{ {script_clean} }})()"
+        return await page.evaluate(script)
 
     async def inspect_dom(self) -> str:
         """Inspeciona o DOM da página ativa delegando para dom_inspector."""
-        return await inspect_dom(self._page)
+        page = await self.ensure_active_page()
+        return await inspect_dom(page)
 
     async def list_tabs(self) -> List[Dict[str, Any]]:
         """Lista todas as abas/páginas abertas no contexto."""
@@ -1414,9 +1552,8 @@ class BrowserTools:
 
     async def download_file(self, selector: str, timeout: int = 60000) -> Dict[str, Any]:
         """Clica em um elemento e aguarda o download do arquivo."""
-        if not self._page:
-            raise RuntimeError("Página do navegador não inicializada.")
-        async with self._page.expect_download(timeout=timeout) as download_info:
+        page = await self.ensure_active_page()
+        async with page.expect_download(timeout=timeout) as download_info:
             await self.click(selector)
         download = await download_info.value
         os.makedirs("static/downloads", exist_ok=True)

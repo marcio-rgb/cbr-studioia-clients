@@ -423,8 +423,15 @@ async def run_client(urls: list, engine: str = "chromium"):
                     nonlocal frame_counter
                     try:
                         frame_counter += 1
-                        frame_path = os.path.join(frames_dir, f"frame_{frame_counter:04d}.png")
-                        await page.screenshot(path=frame_path, full_page=False)
+                        if page and not (hasattr(page, "is_closed") and page.is_closed()):
+                            shot_bytes = await page.screenshot(full_page=False, type="jpeg", quality=75)
+                            b64 = base64.b64encode(shot_bytes).decode("utf-8")
+                            cur_url = getattr(page, "url", "")
+                            await websocket.send(json.dumps({
+                                "type": "browser_frame",
+                                "frame": b64,
+                                "url": cur_url
+                            }))
                     except Exception:
                         pass
 
@@ -434,6 +441,20 @@ async def run_client(urls: list, engine: str = "chromium"):
                         msg_id = data.get("id")
                         action = data.get("action")
                         params = data.get("params", {})
+
+                        # Garante que page seja a página aberta e ativa
+                        if context:
+                            try:
+                                pages = context.pages
+                                if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                                    for p_cand in reversed(pages):
+                                        if hasattr(p_cand, "is_closed") and not p_cand.is_closed():
+                                            page = p_cand
+                                            break
+                                if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+                                    page = await context.new_page()
+                            except Exception as p_err:
+                                print(f"⚠️ Erro ao atualizar página ativa: {p_err}")
 
                         print(f"📩 Ação recebida da VPS [{msg_id}]: {action}")
                         response = {"id": msg_id, "status": "success", "result": {}}
@@ -454,9 +475,9 @@ async def run_client(urls: list, engine: str = "chromium"):
                             response["status"] = "error"
                             response["error"] = str(action_err)
 
-                            err_msg = str(action_err).lower()
-                            if "closed" in err_msg or "target page" in err_msg:
-                                print("⚠️ Detectado que o navegador ou a página foi fechada. Reiniciando sessão...")
+                            # Só reinicia se o próprio browser/processo foi fechado
+                            if browser and not browser.is_connected():
+                                print("⚠️ Detectado que o navegador foi fechado. Reiniciando sessão...")
                                 raise RuntimeError("Navegador fechado localmente")
 
                         await websocket.send(json.dumps(response))
