@@ -547,12 +547,15 @@ def run_gui():
                     if res.status == 200:
                         data = json.loads(res.read().decode("utf-8"))
                         token = data.get("access_token")
+                        user_id = data.get("user_id") or (data.get("user", {}) or {}).get("id")
                         session["server_url"] = server_url
                         session["email"] = email
                         session["token"] = token
+                        if user_id:
+                            session["user_id"] = user_id
                         session["browser_engine"] = engine
                         save_session(session)
-                        append_log(f"[✔] Autenticado com sucesso como {email}!")
+                        append_log(f"[✔] Autenticado com sucesso como {email} (User #{user_id or '?'})!")
             except Exception as auth_err:
                 append_log(f"[✖] Falha no login: {auth_err}")
                 root.after(0, lambda: messagebox.showerror("Falha de Autenticação", f"Erro ao realizar login: {auth_err}"))
@@ -580,12 +583,18 @@ def run_gui():
         append_log(f"[🚀] Conectando motor {engine.upper()} ao WebSocket: {ws_url}")
         root.after(0, lambda: set_ui_state(True))
 
+        user_id = session.get("user_id")
         if getattr(sys, 'frozen', False):
             # Se estiver rodando como executável standalone PyInstaller
             cmd = [sys.executable, "--run-client", str(script_path), "--url", ws_url, "--engine", engine]
         else:
             # Se estiver rodando como script python direto
             cmd = [sys.executable, str(script_path), "--url", ws_url, "--engine", engine]
+
+        if user_id:
+            cmd.extend(["--user-id", str(user_id)])
+        if token:
+            cmd.extend(["--token", str(token)])
 
         try:
             client_proc = subprocess.Popen(

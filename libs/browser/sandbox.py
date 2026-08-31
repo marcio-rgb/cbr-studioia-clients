@@ -53,7 +53,8 @@ async def execute_code_sandbox(
     login_user: str = "",
     login_pass: str = "",
     extra_context: Optional[Dict[str, Any]] = None,
-    register_download_fn=None
+    register_download_fn=None,
+    source_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Executa snippets de código Python no contexto ativo da página.
@@ -97,7 +98,17 @@ async def execute_code_sandbox(
 
     stdout_buffer = io.StringIO()
     original_stdout = sys.stdout
-    sys.stdout = TeeStream(original_stdout, stdout_buffer)
+
+    def local_print(*args, **kwargs):
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        text = sep.join(str(a) for a in args) + end
+        stdout_buffer.write(text)
+        try:
+            original_stdout.write(text)
+            original_stdout.flush()
+        except Exception:
+            pass
 
     # Garante que page seja uma página viva
     if context:
@@ -113,6 +124,7 @@ async def execute_code_sandbox(
         except Exception as e:
             logger.warning(f"Erro ao recuperar página ativa em execute_code_sandbox: {e}")
 
+    eff_source_id = source_id or (extra_context or {}).get("source_id")
     tools_instance = BrowserTools(
         page=page,
         context=context,
@@ -122,11 +134,13 @@ async def execute_code_sandbox(
         login_pass=login_pass,
         params=(extra_context or {}).get("params"),
         set_output_fn=set_output,
-        register_download_fn=register_download_fn
+        register_download_fn=register_download_fn,
+        source_id=eff_source_id
     )
 
     try:
         global_context = {
+            "print": local_print,
             "tools": tools_instance,
             "page": page,
             "context": context,
@@ -161,15 +175,15 @@ async def execute_code_sandbox(
             else:
                 exec_res = "Main executado"
         else:
-            # Envolve o snippet em uma função assíncrona injetando tools, page, etc.
+            # Envolve o snippet em uma função assíncrona injetando tools, page, print, etc.
             import textwrap
             dedented_code = textwrap.dedent(clean_code).strip()
             indented = "\n".join("        " + line for line in dedented_code.split('\n'))
-            wrapper = f"""async def __snippet_runner(tools, page, context, browser, playwright, p, asyncio, set_output, login_user, login_pass, params):
+            wrapper = f"""async def __snippet_runner(tools, page, context, browser, playwright, p, asyncio, set_output, login_user, login_pass, params, print):
 {indented}
         _locs = locals()
         for _k, _v in list(_locs.items()):
-            if callable(_v) and _k not in ('tools', 'page', 'context', 'browser', 'playwright', 'p', 'asyncio', 'set_output', 'login_user', 'login_pass', 'params') and not _k.startswith('__'):
+            if callable(_v) and _k not in ('tools', 'page', 'context', 'browser', 'playwright', 'p', 'asyncio', 'set_output', 'login_user', 'login_pass', 'params', 'print') and not _k.startswith('__'):
                 try:
                     import inspect
                     sig = inspect.signature(_v)
@@ -193,7 +207,7 @@ async def execute_code_sandbox(
             runner_func = local_ns.get("__snippet_runner")
             exec_res = await runner_func(
                 tools_instance, page, context, browser, p_obj, p_obj, asyncio, set_output,
-                login_user, login_pass, tools_instance.get_params()
+                login_user, login_pass, tools_instance.get_params(), local_print
             )
     except Exception as e:
         if isinstance(e, asyncio.CancelledError):
@@ -214,7 +228,7 @@ async def execute_code_sandbox(
             "downloaded_files": tools_instance.get_downloaded_files() if 'tools_instance' in locals() else []
         }
     finally:
-        sys.stdout = original_stdout
+        pass
 
     captured_stdout_str = stdout_buffer.getvalue().strip()
     structured_data = captured_output if captured_output is not None else exec_res

@@ -276,10 +276,12 @@ def ensure_playwright_browsers(engine: str = "all", force: bool = False):
 # CICLO DE VIDA DO CLIENTE WEBSOCKET
 # =============================================================================
 
-async def run_client(urls: list, engine: str = "chromium"):
+async def run_client(urls: list, engine: str = "chromium", user_id: Optional[int] = None, token: Optional[str] = None):
     print("========================================================")
     print("  CBR Agents Remote Client (Visual Automation Engine)")
     print(f"  Motor Selecionado: {engine.upper()}")
+    if user_id:
+        print(f"  Usuário Vinculado: #{user_id}")
     print(f"  URLs de Conexão: {', '.join(urls)}")
     print("========================================================")
     print("")
@@ -291,6 +293,22 @@ async def run_client(urls: list, engine: str = "chromium"):
             print(f"🔗 Conectando ao servidor em {target_url}...")
             async with websockets.connect(target_url, ping_interval=None) as websocket:
                 print(f"✅ Conectado com sucesso ao servidor em {target_url}! Aguardando missões...")
+
+                if user_id is not None or token:
+                    try:
+                        hs_payload = {
+                            "type": "handshake",
+                            "client_name": "CbrAgents-Desktop-Client",
+                            "version": "2.5.0"
+                        }
+                        if user_id is not None:
+                            hs_payload["user_id"] = int(user_id)
+                        if token:
+                            hs_payload["token"] = token
+                        await websocket.send(json.dumps(hs_payload))
+                        print(f"🔑 Handshake enviado com sucesso (usuário #{user_id or 'token'})")
+                    except Exception as hs_err:
+                        print(f"⚠️ Erro ao enviar handshake de autenticação: {hs_err}")
 
                 browser = None
                 context = None
@@ -553,6 +571,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CBR Agents Desktop Remote Client")
     parser.add_argument("--url", default="", help="URL WebSocket da VPS (ex: wss://ia.creditobr.com.br/ws ou ws://localhost:8384)")
     parser.add_argument("--engine", default="chromium", choices=["chromium", "camoufox", "playwright"], help="Motor de navegação: chromium (padrão) ou camoufox")
+    parser.add_argument("--user-id", type=int, default=None, help="ID do usuário para roteamento multi-tenant exclusivo")
+    parser.add_argument("--token", default=None, help="Token JWT de autenticação")
     args = parser.parse_args()
 
     urls_to_try = []
@@ -575,7 +595,7 @@ if __name__ == "__main__":
         if urls_to_try:
             check_and_auto_update(urls_to_try[0])
         ensure_playwright_browsers(engine=args.engine)
-        asyncio.run(run_client(urls_to_try, engine=args.engine))
+        asyncio.run(run_client(urls_to_try, engine=args.engine, user_id=args.user_id, token=args.token))
     except KeyboardInterrupt:
         print("\nCliente encerrado pelo usuário.")
         sys.exit(0)
