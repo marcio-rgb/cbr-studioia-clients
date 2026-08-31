@@ -12,7 +12,7 @@ import os
 import time
 import asyncio
 import logging
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page
 
 from libs.utils import setup_logger
