@@ -48,7 +48,7 @@ python -m camoufox fetch
 
 echo.
 echo ========================================================
-echo   Iniciando CBR Agents Launcher...
+echo   Iniciando CBR Estúdio IA Launcher...
 echo ========================================================
 echo.
 

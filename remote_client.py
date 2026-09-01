@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR AGENTS - REMOTE PLAYWRIGHT CLIENT (STANDALONE DESKTOP CLIENT)
+  CBR ESTÚDIO IA - REMOTE PLAYWRIGHT CLIENT (STANDALONE DESKTOP CLIENT)
   Cliente autônomo de automação para execução na máquina do usuário (Linux / Windows).
   Conecta via WebSocket à porta 8384 e despacha as ações e snippets de código
   diretamente para o motor unificado libs/browser/engine.py.
@@ -278,7 +278,7 @@ def ensure_playwright_browsers(engine: str = "all", force: bool = False):
 
 async def run_client(urls: list, engine: str = "chromium", user_id: Optional[int] = None, token: Optional[str] = None):
     print("========================================================")
-    print("  CBR Agents Remote Client (Visual Automation Engine)")
+    print("  CBR Estúdio IA Remote Client (Visual Automation Engine)")
     print(f"  Motor Selecionado: {engine.upper()}")
     if user_id:
         print(f"  Usuário Vinculado: #{user_id}")
@@ -568,7 +568,7 @@ def check_and_auto_update(vps_url: str):
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CBR Agents Desktop Remote Client")
+    parser = argparse.ArgumentParser(description="CBR Estúdio IA Desktop Remote Client")
     parser.add_argument("--url", default="", help="URL WebSocket da VPS (ex: wss://ia.creditobr.com.br/ws ou ws://localhost:8384)")
     parser.add_argument("--engine", default="chromium", choices=["chromium", "camoufox", "playwright"], help="Motor de navegação: chromium (padrão) ou camoufox")
     parser.add_argument("--user-id", type=int, default=None, help="ID do usuário para roteamento multi-tenant exclusivo")

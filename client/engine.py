@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR AGENTS - UNIFIED PLAYWRIGHT BROWSER ENGINE & TOOLS SDK
+  CBR ESTÚDIO IA - UNIFIED PLAYWRIGHT BROWSER ENGINE & TOOLS SDK
   Motor central e agnóstico de automação Playwright para modo Visual e Interno.
   Fornece a classe BrowserTools como SDK de alto nível para scripts e agentes,
   garantindo 100% de paridade em resiliência, seletores, SPAs, iframes e captchas.

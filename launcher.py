@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR AGENTS - CLIENT LAUNCHER & AUTO-UPDATER (DESKTOP GUI & CLI)
-  Design System: Warm Dark Mode (CBR Agents)
+  CBR ESTÚDIO IA - CLIENT LAUNCHER & AUTO-UPDATER (DESKTOP GUI & CLI)
+  Design System: Warm Dark Mode (CBR Estúdio IA)
   Repositório Oficial: https://github.com/marcio-rgb/cbr-studioia-clients
 =============================================================================
 """
@@ -56,7 +56,7 @@ SESSION_FILE = APP_DIR / "session.json"
 LOCAL_SCRIPT_FILE = APP_DIR / "remote_client.py"
 LOCAL_ENGINE_FILE = APP_DIR / "engine.py"
 
-# Cores do Sistema CBR Agents (Warm Dark Theme)
+# Cores do Sistema CBR Estúdio IA (Warm Dark Theme)
 BG_MAIN = "#141211"       # Dark 900
 BG_CARD = "#1c1917"       # Dark 800
 BG_INPUT = "#0c0a09"      # Dark 950
@@ -114,7 +114,7 @@ def sync_remote_client(server_url: str, token: str, log_fn=print) -> Path:
         except Exception:
             pass
 
-    # 1. Tenta baixar via API Oficial do CBR Agents
+    # 1. Tenta baixar via API Oficial do CBR Estúdio IA
     try:
         req = urllib.request.Request(
             f"{server_url}/api/webpilot/client/code",
@@ -350,7 +350,7 @@ def run_gui():
 
     session = load_session()
     root = tk.Tk()
-    root.title("CBR Agents - WebPilot Desktop")
+    root.title("CBR Estúdio IA - WebPilot Desktop")
     root.geometry("540x720")
     root.minsize(500, 650)
     root.configure(bg=BG_MAIN)
@@ -381,7 +381,7 @@ def run_gui():
 
     logo_label = tk.Label(
         header_frame,
-        text="CBR AGENTS",
+        text="CBR ESTÚDIO IA",
         font=("Segoe UI", 18, "bold"),
         fg=ACCENT_ORANGE,
         bg=BG_MAIN
@@ -693,15 +693,16 @@ def handle_python_internal_args():
 def main():
     handle_python_internal_args()
 
-    parser = argparse.ArgumentParser(description="CBR Agents Desktop Launcher")
-    parser.add_argument("--cli", action="store_true", help="Executar no modo terminal/CLI")
+    parser = argparse.ArgumentParser(description="CBR Estúdio IA Desktop Launcher")
+    parser.add_argument("--cli", action="store_true", help="Executar em modo linha de comando (sem interface gráfica)")
+    parser.add_argument("--url", default="", help="URL do WebSocket")
+    parser.add_argument("--engine", default="chromium", help="Motor de navegação")
+    parser.add_argument("--user-id", type=int, default=None, help="ID do usuário")
+    parser.add_argument("--token", default=None, help="Token JWT")
     args = parser.parse_args()
 
-    # Se chamado com --cli ou sem display disponível, executa modo console
-    if args.cli or ("DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ and os.name != "nt"):
-        # Execução CLI
-        session = load_session()
-        print("=== CBR AGENTS - MODO CLI ===")
+    if args.cli or not HAS_TK:
+        print("=== CBR ESTÚDIO IA - MODO CLI ===")
         server_url = session.get("server_url") or DEFAULT_SERVER_URL
         token = session.get("token")
         if not token:

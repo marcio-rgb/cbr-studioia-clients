@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR AGENTS - BROWSER INTERFACES (OOP ABSTRACTION & CONTRACTS)
+  CBR ESTÚDIO IA - BROWSER INTERFACES (OOP ABSTRACTION & CONTRACTS)
   Contratos formais abstratos (ABC) para:
   1. IBrowserDriver: Execução unificada de comandos do navegador.
   2. IBrowserSessionManager: Gerenciamento do ciclo de vida de sessões Playwright.
@@ -20,7 +20,7 @@ from typing import Optional, Dict, Any, List, Union
 class IBrowserDriver(ABC):
     """
     Interface abstrata que define o contrato unificado de execução
-    de ações em navegadores no ecossistema CBR Agents.
+    de ações em navegadores no ecossistema CBR Estúdio IA.
     """
 
     @abstractmethod

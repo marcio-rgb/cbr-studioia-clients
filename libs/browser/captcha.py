@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 =============================================================================
-  CBR AGENTS - CAPTCHA SOLVER MODULE
-  Motor especializado na captura e resolução multicamadas de captchas visuais
-  (OCR local ddddocr -> Gemini Vision gemini-2.5-flash -> API Remota CBR Agents).
+  CBR ESTÚDIO IA - CAPTCHA SOLVER MODULE
+  Sistema Triplo Inteligente para Resolução Automatizada de Captchas
+  (OCR local ddddocr -> Gemini Vision gemini-2.5-flash -> API Remota CBR Estúdio IA).
 =============================================================================
 """
 
@@ -27,8 +27,8 @@ class CaptchaSolver:
     async def solve(cls, page: Any, selector: str) -> str:
         """
         Resolve automaticamente um captcha de imagem localizando o elemento,
-        executando OCR local (ddddocr), fallback com Gemini Vision direto
-        e fallback com a API oficial do CBR Agents (/api/webpilot/solve-captcha).
+        Orquestra a resolução com OCR local (ddddocr), Gemini Vision (Flash 2.5)
+        e fallback com a API oficial do CBR Estúdio IA (/api/webpilot/solve-captcha).
         """
         if not page:
             raise RuntimeError("Página do navegador não inicializada.")
@@ -124,7 +124,7 @@ class CaptchaSolver:
                 except Exception:
                     pass
 
-        # 3. Fallback Oficial via API Remota CBR Agents (/api/webpilot/solve-captcha)
+        # 3. Fallback Oficial via API Remota CBR Estúdio IA (/api/webpilot/solve-captcha)
         if not captcha_text:
             try:
                 b64_img = base64.b64encode(img_bytes).decode("utf-8")
@@ -160,7 +160,7 @@ class CaptchaSolver:
                         resp_dict = json.loads(res.read().decode("utf-8"))
                         captcha_text = resp_dict.get("captcha_text", "").strip()
                         if captcha_text:
-                            logger.info(f"Captcha resolvido via API remota CBR Agents: {captcha_text}")
+                            logger.info(f"Captcha resolvido via API remota CBR Estúdio IA: {captcha_text}")
             except Exception as api_err:
                 logger.warning(f"Aviso na resolução remota de captcha via API: {api_err}")
 
